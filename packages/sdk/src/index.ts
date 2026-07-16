@@ -94,6 +94,23 @@ export interface ExtractResult<T> {
   raw: unknown;
 }
 
+export interface SessionInfo {
+  id: string;
+  name?: string;
+  status?: string;
+  updatedAt?: number;
+  lastOutputAt?: number;
+}
+
+/** A newly-created agent that is still provisioning. Call waitUntilReady()
+ *  to block until it comes online and get its Agent handle. */
+export interface PendingAgent {
+  status: "provisioning";
+  orderId: number;
+  name: string | null;
+  waitUntilReady(opts?: { timeoutMs?: number; pollMs?: number }): Promise<Agent>;
+}
+
 const DEFAULT_BASE_URL = "https://www.sinnon.net/api/v1";
 
 export class SinnonError extends Error {
@@ -326,6 +343,124 @@ export class SinnonClient {
       };
     },
   };
+
+  // Internal: build an Agent handle from a raw server row.
+  private toAgent(row: { id: number; name?: string; status?: string; ready?: boolean }): Agent {
+    return new Agent(this, row.id, row.name ?? `Agent ${row.id}`, row.status ?? "unknown", row.ready === true);
+  }
+  /** @internal — used by Agent handles for their own requests. */
+  agentRequest(path: string, init?: RequestInit) {
+    return this.request(path, init);
+  }
+
+  /** Always-on agents that run the work, that you can watch and drive from
+   *  code — the surface no stateless model SDK can offer. v1: create your
+   *  fleet, dispatch tasks, inspect sessions, decommission. */
+  readonly agents = {
+    /** Every agent your organization owns. */
+    list: async (): Promise<Agent[]> => {
+      const { json } = await this.request("/agents", { method: "GET" });
+      const rows = (json as { agents?: Array<{ id: number; name?: string; status?: string; ready?: boolean }> } | null)?.agents ?? [];
+      return rows.map((r) => this.toAgent(r));
+    },
+
+    /** One agent by id. */
+    get: async (id: number): Promise<Agent> => {
+      const { json } = await this.request(`/agents/${id}`, { method: "GET" });
+      const row = (json as { agent?: { id: number; name?: string; status?: string; ready?: boolean } } | null)?.agent;
+      if (!row) throw new SinnonError("Agent not found.", 404, "not_found");
+      return this.toAgent(row);
+    },
+
+    /** Provision a new agent (free tier in your personal org for now).
+     *  Provisioning is async — call `waitUntilReady()` on the result. */
+    create: async (params?: { name?: string }): Promise<PendingAgent> => {
+      const before = new Set((await this.agents.list().catch(() => [])).map((a) => a.id));
+      const { json } = await this.request("/agents", {
+        method: "POST",
+        body: JSON.stringify({ name: params?.name }),
+      });
+      const orderId = Number((json as { order_id?: number } | null)?.order_id);
+      const name = (json as { name?: string | null } | null)?.name ?? params?.name ?? null;
+      const self = this;
+      return {
+        status: "provisioning",
+        orderId,
+        name,
+        async waitUntilReady(opts) {
+          const deadline = Date.now() + (opts?.timeoutMs ?? 180_000);
+          const pollMs = opts?.pollMs ?? 4_000;
+          while (Date.now() < deadline) {
+            const fresh = (await self.agents.list()).find((a) => !before.has(a.id) && a.ready);
+            // The ready flag flips when the container is scheduled, a beat
+            // before it serves HTTP — confirm it actually responds so the
+            // very next call (dispatch) can't race the boot.
+            if (fresh && (await fresh.isLive())) return fresh;
+            await new Promise((r) => setTimeout(r, pollMs));
+          }
+          throw new SinnonError("The new agent did not become ready in time.", 408, "timeout");
+        },
+      };
+    },
+  };
+}
+
+/** A handle to one agent. Methods hit the org-scoped agent API; the API key
+ *  never sees the underlying container credential. */
+export class Agent {
+  constructor(
+    private readonly client: SinnonClient,
+    readonly id: number,
+    public name: string,
+    public status: string,
+    public ready: boolean,
+  ) {}
+
+  /** Reload this agent's status/readiness from the server (mutates + returns this). */
+  async refresh(): Promise<this> {
+    const fresh = await this.client.agents.get(this.id);
+    this.name = fresh.name; this.status = fresh.status; this.ready = fresh.ready;
+    return this;
+  }
+
+  /** True when the container actually responds (not just the ready flag).
+   *  The flag flips a beat before HTTP is up, so use this to gate first use. */
+  async isLive(): Promise<boolean> {
+    try { await this.sessions(); return true; } catch { return false; }
+  }
+
+  /** Poll until the agent reports ready AND its container responds. */
+  async waitUntilReady(opts?: { timeoutMs?: number; pollMs?: number }): Promise<this> {
+    const deadline = Date.now() + (opts?.timeoutMs ?? 180_000);
+    const pollMs = opts?.pollMs ?? 4_000;
+    while (Date.now() < deadline) {
+      await this.refresh();
+      if (this.ready && (await this.isLive())) return this;
+      await new Promise((r) => setTimeout(r, pollMs));
+    }
+    throw new SinnonError("Agent did not become ready in time.", 408, "timeout");
+  }
+
+  /** Give the agent a task. Spawns a session running the prompt and returns
+   *  its id; watch progress with `sessions()`. */
+  async dispatch(prompt: string, opts?: { name?: string }): Promise<{ sessionId: string }> {
+    const { json } = await this.client.agentRequest(`/agents/${this.id}/dispatch`, {
+      method: "POST",
+      body: JSON.stringify({ prompt, name: opts?.name }),
+    });
+    return { sessionId: String((json as { session_id?: string }).session_id ?? "") };
+  }
+
+  /** The agent's live sessions (id, name, status, activity stamps). */
+  async sessions(): Promise<SessionInfo[]> {
+    const { json } = await this.client.agentRequest(`/agents/${this.id}/sessions`, { method: "GET" });
+    return (json as { sessions?: SessionInfo[] } | null)?.sessions ?? [];
+  }
+
+  /** Decommission the agent. Permanent. */
+  async delete(): Promise<void> {
+    await this.client.agentRequest(`/agents/${this.id}`, { method: "DELETE" });
+  }
 }
 
 export default SinnonClient;

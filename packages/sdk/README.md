@@ -2,10 +2,10 @@
 
 The [SINNON](https://www.sinnon.net) platform client for JavaScript/TypeScript.
 
-Today it covers the **metered models** surface — call platform models and get the
-bill for every request. The **agent lifecycle** (create, dispatch, and stream
-always-on agents) is the headline of this SDK and is on the near-term roadmap;
-see [ROADMAP.md](../../ROADMAP.md).
+Two surfaces: **metered models** (call platform models and get the bill for
+every request) and **always-on agents** (create, dispatch, and inspect agents
+that run the work) — the part no stateless model SDK can offer, because SINNON
+hosts the agent. See [ROADMAP.md](../../ROADMAP.md) for what's next.
 
 ## Install
 
@@ -85,11 +85,28 @@ Ideal for CI jobs, cron tasks, and untrusted prompts where "never spend more
 than X" must be guaranteed in code. The platform's own balance limits still
 apply underneath; this is a tighter guardrail you control.
 
-## Why not just use the AI SDK provider?
+## Agents
 
-Use [`@sinnon/ai-sdk-provider`](../ai-sdk-provider) if you're already on the
-Vercel AI SDK. Use this client if you want a dependency-light, typed SINNON
-client — and, soon, the agent lifecycle that the AI SDK has no equivalent for.
+Always-on agents that run the work — the surface no stateless model SDK has,
+because SINNON hosts the agent. Create one, dispatch tasks, and inspect its
+live sessions, all with an `agents:*`-scoped key:
+
+```ts
+const agent = await sinnon.agents.create({ name: "inbox-watcher" });
+await agent.waitUntilReady();                 // provisions, then confirms it responds
+
+await agent.dispatch("Watch our support inbox and draft replies");
+const sessions = await agent.sessions();      // watch it work
+
+await agent.delete();                         // decommission
+```
+
+`sinnon.agents.list()` / `.get(id)` enumerate your fleet. Everything is
+org-scoped: a key only ever touches its own organization's agents, and it
+never sees the underlying container credential (SINNON mints the session
+scope server-side). Free agents are created in your personal organization,
+gated exactly like the console. Taking over a running session from code
+(`sendInput` / take-over) lands next — see the repo roadmap.
 
 ## Errors
 
