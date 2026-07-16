@@ -1,0 +1,51 @@
+{
+  "name": "@sinnon/ai-sdk-provider",
+  "version": "0.1.0",
+  "description": "Vercel AI SDK provider for SINNON — metered, EU-hosted inference through your organization's model balance.",
+  "keywords": [
+    "ai",
+    "vercel-ai-sdk",
+    "ai-sdk",
+    "provider",
+    "sinnon",
+    "anthropic",
+    "claude",
+    "llm",
+    "eu",
+    "gdpr"
+  ],
+  "license": "MIT",
+  "homepage": "https://www.sinnon.net",
+  "repository": {
+    "type": "git",
+    "url": "https://sinnon.net/git/soliton_sdk"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.15"
+  },
+  "peerDependencies": {
+    "ai": "^7.0.29"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^5.6.3"
+  }
+}

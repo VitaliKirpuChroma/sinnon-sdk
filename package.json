@@ -1,0 +1,13 @@
+{
+  "name": "soliton_sdk",
+  "version": "0.0.0",
+  "private": true,
+  "description": "SINNON JavaScript/TypeScript SDK monorepo.",
+  "workspaces": [
+    "packages/*",
+    "examples"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present"
+  }
+}

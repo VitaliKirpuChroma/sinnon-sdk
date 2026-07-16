@@ -1,0 +1,43 @@
+{
+  "name": "@sinnon/sdk",
+  "version": "0.1.0",
+  "description": "The SINNON platform client — metered EU-hosted models today, always-on agents next.",
+  "keywords": [
+    "sinnon",
+    "ai",
+    "agents",
+    "llm",
+    "claude",
+    "eu",
+    "gdpr",
+    "sdk"
+  ],
+  "license": "MIT",
+  "homepage": "https://www.sinnon.net",
+  "repository": {
+    "type": "git",
+    "url": "https://sinnon.net/git/soliton_sdk"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.6.3"
+  }
+}
