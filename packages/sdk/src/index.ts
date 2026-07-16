@@ -395,7 +395,12 @@ export class SinnonClient {
             // The ready flag flips when the container is scheduled, a beat
             // before it serves HTTP — confirm it actually responds so the
             // very next call (dispatch) can't race the boot.
-            if (fresh && (await fresh.isLive())) return fresh;
+            if (fresh && (await fresh.isLive())) {
+              // Apply the requested name now that the agent exists (the
+              // bucket assigns a random one at provision time).
+              if (name) { try { await fresh.rename(name); } catch { /* keep the auto name */ } }
+              return fresh;
+            }
             await new Promise((r) => setTimeout(r, pollMs));
           }
           throw new SinnonError("The new agent did not become ready in time.", 408, "timeout");
@@ -449,6 +454,13 @@ export class Agent {
       body: JSON.stringify({ prompt, name: opts?.name }),
     });
     return { sessionId: String((json as { session_id?: string }).session_id ?? "") };
+  }
+
+  /** Rename the agent (its display name in the console). Updates + returns this. */
+  async rename(name: string): Promise<this> {
+    await this.client.agentRequest(`/agents/${this.id}`, { method: "PATCH", body: JSON.stringify({ name }) });
+    this.name = name;
+    return this;
   }
 
   /** The agent's live sessions (id, name, status, activity stamps). */
