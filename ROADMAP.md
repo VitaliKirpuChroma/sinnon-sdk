@@ -14,15 +14,13 @@
   end-to-end (create → ready → dispatch → delete). Scopes: `agents:read` /
   `agents:manage` / `agents:dispatch`.
 
-## Next: streaming completions (`models.stream()`)
+## Not planned: streaming completions
 
-The metered endpoint currently buffers. Streaming needs an SSE branch on
-`POST /api/v1/messages` for `stream: true` that tees the upstream stream
-(one branch to the client, one to meter usage and debit on close — the exact
-pattern the orchestrator's claude-proxy already uses) plus a decision on how
-the streamed call surfaces its cost (a trailing `sinnon.usage` event). Billing
-code, so it lands as its own tested pass — the non-streaming path stays
-untouched.
+`models.stream()` is deliberately **not on the roadmap**. Token streaming of a
+single completion is commodity DX that every SDK has, and it would put SSE +
+debit-on-close code on the billed hot path for little differentiation. The
+effort goes into the agent surface instead — that's the moat. (Live-tailing an
+agent's *session* is a different thing: see `agent.watch()` below.)
 
 ## Next on the agent lifecycle
 

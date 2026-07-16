@@ -29,22 +29,28 @@ EU-sovereign infrastructure. No separate LLM-provider account, no second bill.
 ## Where SINNON is different: agents with hands
 
 Most AI libraries give your app a brain for one request. SINNON gives it
-**employees** — always-on agents that run the work, that you can watch and take
-over. That surface is the headline of `@sinnon/sdk` and lands next:
+**employees** — always-on agents that run the work. That surface is the
+headline of `@sinnon/sdk`, and Phase 1 is live:
 
 ```ts
-// Roadmap — see ROADMAP.md. Not shipped until the API-key-scoped
-// agent routes are live; we don't ship methods that quietly no-op.
-const agent = await sinnon.agents.create({ tier: "free" });
+const agent = await sinnon.agents.create({ name: "inbox-watcher" });
+await agent.waitUntilReady();
+
 await agent.dispatch("Watch our support inbox and draft replies");
-for await (const line of agent.sessions.stream()) console.log(line);
+const sessions = await agent.sessions(); // watch it work
+
+await agent.delete();
 ```
+
+Live-tailing a session (`agent.watch()`) and taking over from code land next —
+see [ROADMAP.md](./ROADMAP.md).
 
 ## Getting a key
 
 Mint an organization API key from the SINNON console (or the wizard at
-[sinnon.net/sdk](https://www.sinnon.net/sdk)), grant it the `models:invoke`
-scope, and set `SINNON_API_KEY`. That's it.
+[sinnon.net/sdk](https://www.sinnon.net/sdk)). Grant `models:invoke` for the
+models surface, and `agents:read` / `agents:manage` / `agents:dispatch` for
+agents. Set `SINNON_API_KEY`. That's it.
 
 ## License
 
