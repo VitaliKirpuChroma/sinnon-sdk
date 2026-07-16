@@ -2,8 +2,22 @@
 
 ## Shipped
 
-- **`@sinnon/sdk` `models`** — `models.list()`, `models.complete()` with
+- **`@sinnon/sdk` `models`** — `models.list()`, `models.complete()`,
+  `models.extract<T>()` (typed structured output via forced tool-use), with
   per-call billing surfaced. Verified end-to-end against the metered API.
+- **Client ergonomics** — `maxSpendEur` hard spend cap + `spentEur` /
+  `remainingBudgetEur` / `balanceEur`; automatic retries (429/5xx/network,
+  backoff) and per-request timeouts.
+
+## Next: streaming completions (`models.stream()`)
+
+The metered endpoint currently buffers. Streaming needs an SSE branch on
+`POST /api/v1/messages` for `stream: true` that tees the upstream stream
+(one branch to the client, one to meter usage and debit on close — the exact
+pattern the orchestrator's claude-proxy already uses) plus a decision on how
+the streamed call surfaces its cost (a trailing `sinnon.usage` event). Billing
+code, so it lands as its own tested pass — the non-streaming path stays
+untouched.
 
 ## Next: the agent lifecycle (`sinnon.agents.*`)
 
@@ -44,14 +58,14 @@ scoped surfaces:
 5. **`GET /api/v1/agents/:id/sessions/stream`** — server-sent events bridging
    the cloud_cli PTY stream out through infra, so a key holder can watch
    without the container token.
-6. **Streaming completions** — a `models.stream()` helper, backed by SSE on
-   `POST /api/v1/messages` when `stream: true`, with the per-token debit
-   applied on stream close.
+6. **Take-over from code** (`agent.sendInput()` / `agent.takeOver()`) — steer
+   a live agent session programmatically. Needs a careful design pass; held
+   deliberately, it's the most novel primitive and worth getting right.
 
 ### Sequencing
 
-Items 1–5 are the agent SDK. Item 6 is independent. Both are additive — no
-change to the shipped model surface.
+Items 1–5 are the agent SDK. Streaming completions (above) is independent of
+all of this. Everything is additive — no change to the shipped model surface.
 
 ## Notes
 

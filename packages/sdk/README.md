@@ -37,6 +37,35 @@ console.log(r.billing); // { costEur, balanceEur }  ← the glass box, in code
 `SinnonClient` reads `SINNON_API_KEY` and `SINNON_BASE_URL` from the environment
 when not passed explicitly.
 
+## Structured output
+
+Give a JSON Schema and a prompt; the model is forced to fill exactly that shape
+(a single tool call under the hood), so you get a typed object with no
+prompt-engineering or brittle parsing:
+
+```ts
+const { data } = await sinnon.models.extract<{ company: string; amountEur: number }>({
+  model: "claude-haiku-4-5",
+  prompt: "Acme raised €4.2M led by Foo Ventures.",
+  schema: {
+    properties: { company: { type: "string" }, amountEur: { type: "number" } },
+    required: ["company", "amountEur"],
+  },
+});
+data.company; // "Acme"
+```
+
+## Retries and timeouts
+
+Transient failures (HTTP 429 and 5xx, network errors) retry automatically with
+exponential backoff; a per-request timeout aborts a hung call. Both are tunable:
+
+```ts
+const sinnon = new SinnonClient({ maxRetries: 3, timeoutMs: 30_000 });
+```
+
+A 4xx other than 429 (bad request, auth, out of funds) never retries.
+
 ## Spend caps and live cost
 
 Set a hard EUR ceiling for a client's lifetime. Once cumulative cost reaches it,
