@@ -11,8 +11,6 @@
   "description": "",
   "type": "module",
   "dependencies": {
-    "@sinnon/ai-sdk-provider": "file:../packages/ai-sdk-provider",
-    "@sinnon/sdk": "file:../packages/sdk",
-    "ai": "^7.0.29"
+    "@sinnon/sdk": "file:../packages/sdk"
   }
 }

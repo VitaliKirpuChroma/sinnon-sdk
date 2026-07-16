@@ -22,6 +22,14 @@ export interface SinnonClientOptions {
   /** API base (the `/api/v1` root). Falls back to SINNON_BASE_URL, then
    *  the hosted platform. */
   baseURL?: string;
+  /** Hard client-side spend cap for THIS client's lifetime, in EUR. Once
+   *  the cumulative cost of calls made through this client reaches the cap,
+   *  further billable calls throw a `budget_exceeded` SinnonError before
+   *  hitting the network. Ideal for CI jobs, cron tasks, and untrusted
+   *  prompts where "never spend more than X" must be guaranteed in code.
+   *  The platform's own balance limits still apply underneath; this is an
+   *  extra, tighter guardrail you control per client. */
+  maxSpendEur?: number;
   /** Injectable fetch for tests / custom agents. */
   fetch?: typeof fetch;
 }
@@ -69,6 +77,9 @@ export class SinnonClient {
   private readonly apiKey: string;
   private readonly baseURL: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly maxSpendEur: number | null;
+  private spentEurValue = 0;
+  private lastBalanceEurValue: number | null = null;
 
   constructor(options: SinnonClientOptions = {}) {
     const apiKey = options.apiKey ?? (typeof process !== "undefined" ? process.env?.SINNON_API_KEY : undefined);
@@ -83,6 +94,25 @@ export class SinnonClient {
       (options.baseURL ?? (typeof process !== "undefined" ? process.env?.SINNON_BASE_URL : undefined) ?? DEFAULT_BASE_URL)
         .replace(/\/+$/, "");
     this.fetchImpl = options.fetch ?? fetch;
+    this.maxSpendEur =
+      typeof options.maxSpendEur === "number" && options.maxSpendEur >= 0 ? options.maxSpendEur : null;
+  }
+
+  /** Cumulative EUR cost of billable calls made through this client. */
+  get spentEur(): number {
+    return this.spentEurValue;
+  }
+
+  /** Remaining budget under `maxSpendEur`, or null when no cap is set. */
+  get remainingBudgetEur(): number | null {
+    return this.maxSpendEur == null ? null : Math.max(0, this.maxSpendEur - this.spentEurValue);
+  }
+
+  /** Org model balance (EUR) reported by the most recent billable call,
+   *  or null before any call. Read straight from the response, so it's the
+   *  real remaining credit with no extra request. */
+  get balanceEur(): number | null {
+    return this.lastBalanceEurValue;
   }
 
   private async request(path: string, init: RequestInit = {}): Promise<{ res: Response; json: unknown }> {
@@ -114,6 +144,17 @@ export class SinnonClient {
      *  (at cost). Anthropic-Messages under the hood; returns the flattened
      *  text plus usage and the billing echoed in the response headers. */
     complete: async (params: CompleteParams): Promise<CompleteResult> => {
+      // Client-side budget guardrail — refuse BEFORE the network call once
+      // the cap is reached, so a runaway loop or untrusted prompt can't keep
+      // spending. Fails closed and cheap.
+      if (this.maxSpendEur != null && this.spentEurValue >= this.maxSpendEur) {
+        throw new SinnonError(
+          `Client spend cap of €${this.maxSpendEur.toFixed(2)} reached (spent €${this.spentEurValue.toFixed(2)}). ` +
+          `Raise maxSpendEur or create a new client to continue.`,
+          402,
+          "budget_exceeded",
+        );
+      }
       const body: Record<string, unknown> = {
         model: params.model,
         max_tokens: params.maxTokens ?? 1024,
@@ -138,6 +179,11 @@ export class SinnonClient {
         const n = v == null ? NaN : Number(v);
         return Number.isFinite(n) ? n : null;
       };
+      const costEur = num("x-models-cost-eur");
+      const balanceEur = num("x-models-balance-eur");
+      // Record spend + balance so the getters and the cap stay accurate.
+      if (costEur != null) this.spentEurValue += costEur;
+      if (balanceEur != null) this.lastBalanceEurValue = balanceEur;
       return {
         text,
         model: msg.model ?? params.model,
@@ -145,7 +191,7 @@ export class SinnonClient {
           inputTokens: msg.usage?.input_tokens ?? 0,
           outputTokens: msg.usage?.output_tokens ?? 0,
         },
-        billing: { costEur: num("x-models-cost-eur"), balanceEur: num("x-models-balance-eur") },
+        billing: { costEur, balanceEur },
         raw: json,
       };
     },

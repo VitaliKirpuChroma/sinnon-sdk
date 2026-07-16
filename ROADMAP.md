@@ -2,10 +2,8 @@
 
 ## Shipped
 
-- **`@sinnon/ai-sdk-provider`** — Vercel AI SDK provider over the metered
-  Anthropic-compatible endpoint. `generateText` verified end-to-end.
 - **`@sinnon/sdk` `models`** — `models.list()`, `models.complete()` with
-  per-call billing surfaced.
+  per-call billing surfaced. Verified end-to-end against the metered API.
 
 ## Next: the agent lifecycle (`sinnon.agents.*`)
 
@@ -46,14 +44,14 @@ scoped surfaces:
 5. **`GET /api/v1/agents/:id/sessions/stream`** — server-sent events bridging
    the cloud_cli PTY stream out through infra, so a key holder can watch
    without the container token.
-6. **Metered streaming** (unblocks `streamText` in the provider): SSE on
+6. **Streaming completions** — a `models.stream()` helper, backed by SSE on
    `POST /api/v1/messages` when `stream: true`, with the per-token debit
    applied on stream close.
 
 ### Sequencing
 
-Items 1–5 are the agent SDK. Item 6 is independent and also upgrades the
-provider. Both are additive — no change to the shipped model surface.
+Items 1–5 are the agent SDK. Item 6 is independent. Both are additive — no
+change to the shipped model surface.
 
 ## Notes
 
