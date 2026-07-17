@@ -4,3 +4,6 @@ dist/
 .env
 .env.*
 package-lock.json
+
+# QA scratch harnesses
+examples/_tmp-*
