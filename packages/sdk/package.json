@@ -1,7 +1,7 @@
 {
   "name": "@sinnon/sdk",
-  "version": "0.1.0",
-  "description": "The SINNON platform client — metered EU-hosted models today, always-on agents next.",
+  "version": "0.7.0",
+  "description": "The SINNON platform client — metered EU-hosted models and always-on agents you can dispatch, watch live, and budget from code.",
   "keywords": [
     "sinnon",
     "ai",
@@ -19,21 +19,26 @@
     "url": "https://sinnon.net/git/soliton_sdk"
   },
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./dist/cjs/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "require": "./dist/cjs/index.js"
     }
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node scripts/write-cjs-marker.mjs",
     "prepublishOnly": "npm run build"
   },
   "devDependencies": {
