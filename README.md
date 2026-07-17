@@ -108,6 +108,46 @@ Scopes: `integrations:read` / `integrations:use`, `approvals:request` /
 `approvals:read`, `automations:manage` (webhook URLs), `alerts:read` /
 `alerts:write`.
 
+## Bookings your customers can self-serve
+
+Calendly-style scheduling on top of the org calendar. Define booking pages and
+service types from code (authed, `calendar:write`), then let anyone book a slot
+from your own site with a **browser-safe public booker that needs no API key** —
+the page token is the capability. Every booking lands on the org calendar and
+notifies the team, so nobody plays phone tag.
+
+```ts
+// 1. Provision from a script (org API key):
+const page = await sinnon.booking.pages.create({
+  calendarId: cal.id, title: "Book a lift", timezone: "Europe/Helsinki",
+  requireApproval: true, language: "fi",
+});
+await sinnon.booking.types.create(page.id, {
+  name: "Boat lift", durationMinutes: 60, locationKind: "in_person",
+  questions: [{ id: "site", label: "Pickup address", type: "address", required: true }],
+});
+
+// 2. Triage what comes in:
+for (const b of await sinnon.booking.list({ status: "pending" })) {
+  await sinnon.booking.approve(b.id);
+}
+```
+
+```ts
+// 3. In the browser, on your own site — no key, just the page token:
+import { createPublicBooking } from "@sinnon/sdk";
+const booker = createPublicBooking({ token: "bp_..." });      // baseUrl "" = same-origin
+const cfg   = await booker.config();
+const slots = await booker.slots({ typeId: cfg.types[0].id });
+await booker.book({
+  typeId: cfg.types[0].id, name, email, phone,
+  startsAt: slots[0].startsAt, answers: { site: "Keltanontie 3, Tuusula" },
+});
+```
+
+Scopes: `calendar:read` / `calendar:write`. The public booker is unauthenticated
+by design (address autocomplete, slots, book, reschedule, cancel).
+
 ## Getting a key
 
 Mint an organization API key from the SINNON console (or the wizard at

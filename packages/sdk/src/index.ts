@@ -1112,6 +1112,437 @@ export class SinnonError extends Error {
   }
 }
 
+// ── Booking (Calendly-style scheduling on top of the org calendar) ──────────
+/** A weekly availability window on a booking page (day: 0=Sun .. 6=Sat). */
+export interface BookingHours { day: number; start: string; end: string; }
+/** A custom question rendered on a booking type's form. */
+export interface BookingQuestion {
+  id: string;
+  label: string;
+  type: "text" | "textarea" | "select" | "email" | "phone" | "number" | "date" | "url" | "address" | "route" | string;
+  required: boolean;
+  options?: string[];
+}
+/** A public booking page — the org side of a Calendly-style booker. Its
+ *  publicToken is the capability behind /book/:token. */
+export interface BookingPage {
+  id: number;
+  calendarId: number;
+  calendarName: string | null;
+  enabled: boolean;
+  publicToken: string;
+  publicUrl: string;
+  publicPath: string;
+  title: string;
+  description: string;
+  timezone: string;
+  hours: BookingHours[];
+  requireApproval: boolean;
+  minNoticeMinutes: number;
+  maxHorizonDays: number;
+  brandColor: string;
+  language: "fi" | "en" | string;
+  allowReschedule: boolean;
+  allowCancel: boolean;
+  typeCount?: number;
+}
+/** A bookable meeting / service type on a page. */
+export interface BookingType {
+  id: number;
+  bookingPageId: number;
+  name: string;
+  description: string;
+  durationMinutes: number;
+  bufferBeforeMinutes: number;
+  bufferAfterMinutes: number;
+  location: string;
+  locationKind: "" | "in_person" | "phone" | "video" | "custom" | string;
+  videoProvider: "" | "native" | string;
+  color: string;
+  questions: BookingQuestion[];
+  sortOrder: number;
+  active: boolean;
+}
+/** One submitted booking (the org triage view). */
+export interface Booking {
+  id: number;
+  bookingPageId: number;
+  bookingTypeId: number;
+  typeName: string | null;
+  status: "pending" | "confirmed" | "cancelled" | "declined" | string;
+  startsAt: string;
+  endsAt: string;
+  bookerName: string;
+  bookerEmail: string;
+  bookerPhone: string;
+  answers: Array<{ id: string; label: string; value: string }>;
+  roomToken: string;
+  createdAt: string;
+  decidedAt: string | null;
+}
+export interface CreateBookingPageParams {
+  /** The calendar this page books against (one page per calendar). */
+  calendarId: number;
+  title?: string;
+  description?: string;
+  timezone?: string;
+  hours?: BookingHours[];
+  requireApproval?: boolean;
+  minNoticeMinutes?: number;
+  maxHorizonDays?: number;
+  brandColor?: string;
+  language?: "fi" | "en";
+  allowReschedule?: boolean;
+  allowCancel?: boolean;
+  enabled?: boolean;
+  /** #hex tint or a data:image URI behind the booker card. */
+  bgStyle?: string;
+  /** A data:image URI logo (≤256KB). */
+  logoUrl?: string;
+}
+export interface CreateBookingTypeParams {
+  name: string;
+  durationMinutes: number;
+  description?: string;
+  bufferBeforeMinutes?: number;
+  bufferAfterMinutes?: number;
+  location?: string;
+  locationKind?: "in_person" | "phone" | "video" | "custom";
+  videoProvider?: "" | "native";
+  color?: string;
+  questions?: BookingQuestion[];
+  active?: boolean;
+}
+
+// ── Public self-service booking (no API key; the bp_ token is the capability) ─
+export interface PublicBookingType {
+  id: number;
+  name: string;
+  description: string;
+  durationMinutes: number;
+  location: string;
+  locationKind: string;
+  videoProvider: string;
+  color: string;
+  questions: BookingQuestion[];
+}
+export interface PublicBookingConfig {
+  title: string;
+  description: string;
+  timezone: string;
+  brandColor: string;
+  orgName: string;
+  requireApproval: boolean;
+  maxHorizonDays: number;
+  language: "fi" | "en" | string;
+  types: PublicBookingType[];
+}
+export interface BookingSlot { startsAt: string; endsAt: string; }
+export interface BookRequest {
+  typeId: number;
+  name: string;
+  email: string;
+  /** UTC instant: "YYYY-MM-DD HH:MM:SS" or ISO 8601. Use a slot from slots(). */
+  startsAt: string;
+  phone?: string;
+  /** Answers to the type's questions — by question id, or as {id,value} pairs. */
+  answers?: Record<string, string> | Array<{ id: string; value: string }>;
+}
+export interface BookingResult {
+  status: "pending" | "confirmed" | string;
+  manageToken: string;
+  manageUrl: string;
+  roomUrl?: string;
+  startsAt: string;
+  endsAt: string;
+  timezone: string;
+}
+export interface ManagedBooking {
+  status: string;
+  startsAt: string;
+  endsAt: string;
+  timezone: string;
+  typeName: string;
+  location: string;
+  locationKind: string;
+  roomUrl?: string;
+  bookerName: string;
+  canModify: boolean;
+  canReschedule: boolean;
+  canCancel: boolean;
+}
+export interface GeoResult { label: string; lat: number; lng: number; }
+/** A public booker bound to one booking page's token — no API key, safe to
+ *  run in a browser. Get one from createPublicBooking() or, server-side, from
+ *  client.booking.public(token). */
+export interface PublicBooker {
+  /** The page config: title, brand, language, and the bookable types. */
+  config(): Promise<PublicBookingConfig>;
+  /** Open slots for a type in a window (defaults to now .. +30 days). */
+  slots(opts: { typeId: number; from?: string; to?: string }): Promise<BookingSlot[]>;
+  /** Submit a booking. Returns a manage token/url; pending if the page
+   *  requires approval. */
+  book(req: BookRequest): Promise<BookingResult>;
+  /** The booker-facing view of a booking (by its manage token). */
+  getBooking(manageToken: string): Promise<ManagedBooking>;
+  reschedule(manageToken: string, startsAt: string): Promise<{ status: string; startsAt: string; endsAt: string; timezone: string }>;
+  cancel(manageToken: string): Promise<{ status: string }>;
+  /** Address -> ranked pins (token-scoped OSM proxy) for address questions. */
+  geocode(query: string): Promise<GeoResult[]>;
+  /** Pin -> nearest address label. */
+  reverseGeocode(lat: number, lng: number): Promise<GeoResult>;
+}
+export interface PublicBookingOptions {
+  /** The booking page's public token (bp_...). */
+  token: string;
+  /** Server root, e.g. "https://www.sinnon.net" (no /api suffix). Defaults to
+   *  the public host. Pass "" for same-origin from a browser. */
+  baseUrl?: string;
+  fetch?: typeof fetch;
+  timeoutMs?: number;
+}
+
+const PUBLIC_BOOKING_ROOT = "https://www.sinnon.net";
+
+function asRecordArray(v: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(v) ? (v as Array<Record<string, unknown>>) : [];
+}
+function toBookingQuestions(v: unknown): BookingQuestion[] {
+  return asRecordArray(v).map((x) => ({
+    id: String(x.id ?? ""),
+    label: String(x.label ?? ""),
+    type: String(x.type ?? "text"),
+    required: x.required === true,
+    ...(Array.isArray(x.options) ? { options: (x.options as unknown[]).map((o) => String(o)) } : {}),
+  }));
+}
+function toBookingPage(p: Record<string, unknown>): BookingPage {
+  return {
+    id: Number(p.id),
+    calendarId: Number(p.calendar_id),
+    calendarName: typeof p.calendar_name === "string" ? p.calendar_name : null,
+    enabled: p.enabled === true,
+    publicToken: String(p.public_token ?? ""),
+    publicUrl: String(p.public_url ?? ""),
+    publicPath: String(p.public_path ?? ""),
+    title: String(p.title ?? ""),
+    description: String(p.description ?? ""),
+    timezone: String(p.timezone ?? "UTC"),
+    hours: asRecordArray(p.hours).map((h) => ({ day: Number(h.d), start: String(h.start ?? ""), end: String(h.end ?? "") })),
+    requireApproval: p.require_approval === true,
+    minNoticeMinutes: Number(p.min_notice_minutes ?? 0),
+    maxHorizonDays: Number(p.max_horizon_days ?? 60),
+    brandColor: String(p.brand_color ?? ""),
+    language: String(p.language ?? "en"),
+    allowReschedule: p.allow_reschedule !== false,
+    allowCancel: p.allow_cancel !== false,
+    ...(p.type_count != null ? { typeCount: Number(p.type_count) } : {}),
+  };
+}
+function toBookingType(t: Record<string, unknown>): BookingType {
+  return {
+    id: Number(t.id),
+    bookingPageId: Number(t.booking_page_id),
+    name: String(t.name ?? ""),
+    description: String(t.description ?? ""),
+    durationMinutes: Number(t.duration_minutes ?? 0),
+    bufferBeforeMinutes: Number(t.buffer_before_minutes ?? 0),
+    bufferAfterMinutes: Number(t.buffer_after_minutes ?? 0),
+    location: String(t.location ?? ""),
+    locationKind: String(t.location_kind ?? ""),
+    videoProvider: String(t.video_provider ?? ""),
+    color: String(t.color ?? ""),
+    questions: toBookingQuestions(t.questions),
+    sortOrder: Number(t.sort_order ?? 0),
+    active: t.active === true,
+  };
+}
+function toBooking(b: Record<string, unknown>): Booking {
+  return {
+    id: Number(b.id),
+    bookingPageId: Number(b.booking_page_id),
+    bookingTypeId: Number(b.booking_type_id),
+    typeName: typeof b.type_name === "string" ? b.type_name : null,
+    status: String(b.status ?? ""),
+    startsAt: String(b.starts_at ?? ""),
+    endsAt: String(b.ends_at ?? ""),
+    bookerName: String(b.booker_name ?? ""),
+    bookerEmail: String(b.booker_email ?? ""),
+    bookerPhone: String(b.booker_phone ?? ""),
+    answers: asRecordArray(b.answers).map((a) => ({ id: String(a.id ?? ""), label: String(a.label ?? ""), value: String(a.value ?? "") })),
+    roomToken: String(b.room_token ?? ""),
+    createdAt: String(b.created_at ?? ""),
+    decidedAt: typeof b.decided_at === "string" ? b.decided_at : null,
+  };
+}
+function bookingPageBody(p: Partial<CreateBookingPageParams> & { enabled?: boolean }): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (p.calendarId != null) body.calendar_id = p.calendarId;
+  if (p.title !== undefined) body.title = p.title;
+  if (p.description !== undefined) body.description = p.description;
+  if (p.timezone !== undefined) body.timezone = p.timezone;
+  if (p.hours !== undefined) body.hours = p.hours.map((h) => ({ d: h.day, start: h.start, end: h.end }));
+  if (p.requireApproval !== undefined) body.require_approval = p.requireApproval;
+  if (p.minNoticeMinutes !== undefined) body.min_notice_minutes = p.minNoticeMinutes;
+  if (p.maxHorizonDays !== undefined) body.max_horizon_days = p.maxHorizonDays;
+  if (p.brandColor !== undefined) body.brand_color = p.brandColor;
+  if (p.language !== undefined) body.language = p.language;
+  if (p.allowReschedule !== undefined) body.allow_reschedule = p.allowReschedule;
+  if (p.allowCancel !== undefined) body.allow_cancel = p.allowCancel;
+  if (p.enabled !== undefined) body.enabled = p.enabled;
+  if (p.bgStyle !== undefined) body.bg_style = p.bgStyle;
+  if (p.logoUrl !== undefined) body.logo_url = p.logoUrl;
+  return body;
+}
+function bookingTypeBody(t: Partial<CreateBookingTypeParams>): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (t.name !== undefined) body.name = t.name;
+  if (t.durationMinutes !== undefined) body.duration_minutes = t.durationMinutes;
+  if (t.description !== undefined) body.description = t.description;
+  if (t.bufferBeforeMinutes !== undefined) body.buffer_before_minutes = t.bufferBeforeMinutes;
+  if (t.bufferAfterMinutes !== undefined) body.buffer_after_minutes = t.bufferAfterMinutes;
+  if (t.location !== undefined) body.location = t.location;
+  if (t.locationKind !== undefined) body.location_kind = t.locationKind;
+  if (t.videoProvider !== undefined) body.video_provider = t.videoProvider;
+  if (t.color !== undefined) body.color = t.color;
+  if (t.questions !== undefined) body.questions = t.questions;
+  if (t.active !== undefined) body.active = t.active;
+  return body;
+}
+
+/** Create a browser-safe public booker for one booking page. Needs no API
+ *  key — the bp_ token is the capability. Powers a custom booking widget on
+ *  any site:
+ *
+ *  ```ts
+ *  const booker = createPublicBooking({ token: "bp_...", baseUrl: "" });
+ *  const cfg = await booker.config();
+ *  const slots = await booker.slots({ typeId: cfg.types[0].id });
+ *  await booker.book({ typeId: cfg.types[0].id, name, email, phone,
+ *                      startsAt: slots[0].startsAt, answers: { kohde: "..." } });
+ *  ``` */
+export function createPublicBooking(options: PublicBookingOptions): PublicBooker {
+  const token = options.token;
+  if (!token) throw new SinnonError("A booking page token is required.", 400, "token_required");
+  const root = (options.baseUrl ?? PUBLIC_BOOKING_ROOT).replace(/\/+$/, "");
+  const base = `${root}/api/public/booking/${encodeURIComponent(token)}`;
+  const doFetch = options.fetch ?? fetch;
+  const timeoutMs = typeof options.timeoutMs === "number" && options.timeoutMs > 0 ? options.timeoutMs : 30_000;
+
+  async function call(sub: string, init?: RequestInit): Promise<Record<string, unknown>> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await doFetch(`${base}${sub}`, {
+        ...init,
+        signal: controller.signal,
+        headers: {
+          Accept: "application/json",
+          ...(init?.body ? { "Content-Type": "application/json" } : {}),
+          ...(init?.headers as Record<string, string> | undefined),
+        },
+      });
+      const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+      if (!res.ok) {
+        const code = typeof json?.code === "string" ? json.code : undefined;
+        throw new SinnonError(typeof json?.error === "string" ? json.error : `Booking request failed (${res.status})`, res.status, code);
+      }
+      return json ?? {};
+    } catch (e) {
+      if (e instanceof SinnonError) throw e;
+      if (e instanceof Error && e.name === "AbortError") throw new SinnonError(`Request timed out after ${timeoutMs}ms`, 408, "timeout");
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  return {
+    async config(): Promise<PublicBookingConfig> {
+      const j = await call("");
+      return {
+        title: String(j.title ?? ""),
+        description: String(j.description ?? ""),
+        timezone: String(j.timezone ?? "UTC"),
+        brandColor: String(j.brand_color ?? ""),
+        orgName: String(j.org_name ?? ""),
+        requireApproval: j.require_approval === true,
+        maxHorizonDays: Number(j.max_horizon_days ?? 60),
+        language: String(j.language ?? "en"),
+        types: asRecordArray(j.types).map((t) => ({
+          id: Number(t.id),
+          name: String(t.name ?? ""),
+          description: String(t.description ?? ""),
+          durationMinutes: Number(t.duration_minutes ?? 0),
+          location: String(t.location ?? ""),
+          locationKind: String(t.location_kind ?? ""),
+          videoProvider: String(t.video_provider ?? ""),
+          color: String(t.color ?? ""),
+          questions: toBookingQuestions(t.questions),
+        })),
+      };
+    },
+    async slots(opts): Promise<BookingSlot[]> {
+      const qs = new URLSearchParams({ type: String(opts.typeId) });
+      if (opts.from) qs.set("from", opts.from);
+      if (opts.to) qs.set("to", opts.to);
+      const j = await call(`/slots?${qs}`);
+      return asRecordArray(j.slots).map((s) => ({ startsAt: String(s.starts_at ?? ""), endsAt: String(s.ends_at ?? "") }));
+    },
+    async book(req): Promise<BookingResult> {
+      const answers = Array.isArray(req.answers)
+        ? req.answers
+        : Object.entries(req.answers ?? {}).map(([id, value]) => ({ id, value: String(value) }));
+      const j = await call("/book", {
+        method: "POST",
+        body: JSON.stringify({ type: req.typeId, name: req.name, email: req.email, phone: req.phone ?? "", starts_at: req.startsAt, answers }),
+      });
+      return {
+        status: String(j.status ?? ""),
+        manageToken: String(j.manage_token ?? ""),
+        manageUrl: String(j.manage_url ?? ""),
+        ...(j.room_url ? { roomUrl: String(j.room_url) } : {}),
+        startsAt: String(j.starts_at ?? ""),
+        endsAt: String(j.ends_at ?? ""),
+        timezone: String(j.timezone ?? "UTC"),
+      };
+    },
+    async getBooking(manageToken): Promise<ManagedBooking> {
+      const j = await call(`/booking/${encodeURIComponent(manageToken)}`);
+      return {
+        status: String(j.status ?? ""),
+        startsAt: String(j.starts_at ?? ""),
+        endsAt: String(j.ends_at ?? ""),
+        timezone: String(j.timezone ?? "UTC"),
+        typeName: String(j.type_name ?? ""),
+        location: String(j.location ?? ""),
+        locationKind: String(j.location_kind ?? ""),
+        ...(j.room_url ? { roomUrl: String(j.room_url) } : {}),
+        bookerName: String(j.booker_name ?? ""),
+        canModify: j.can_modify === true,
+        canReschedule: j.can_reschedule === true,
+        canCancel: j.can_cancel === true,
+      };
+    },
+    async reschedule(manageToken, startsAt) {
+      const j = await call(`/booking/${encodeURIComponent(manageToken)}/reschedule`, { method: "POST", body: JSON.stringify({ starts_at: startsAt }) });
+      return { status: String(j.status ?? ""), startsAt: String(j.starts_at ?? ""), endsAt: String(j.ends_at ?? ""), timezone: String(j.timezone ?? "UTC") };
+    },
+    async cancel(manageToken) {
+      const j = await call(`/booking/${encodeURIComponent(manageToken)}/cancel`, { method: "POST", body: "{}" });
+      return { status: String(j.status ?? "cancelled") };
+    },
+    async geocode(query): Promise<GeoResult[]> {
+      const j = await call(`/geocode?q=${encodeURIComponent(query)}`);
+      return asRecordArray(j.results).map((r) => ({ label: String(r.label ?? ""), lat: Number(r.lat), lng: Number(r.lng) }));
+    },
+    async reverseGeocode(lat, lng): Promise<GeoResult> {
+      const j = await call(`/geocode-reverse?lat=${lat}&lng=${lng}`);
+      return { label: String(j.label ?? ""), lat: Number(j.lat ?? lat), lng: Number(j.lng ?? lng) };
+    },
+  };
+}
+
 export class SinnonClient {
   private readonly apiKey: string;
   private readonly baseURL: string;
@@ -3010,6 +3441,106 @@ export class SinnonClient {
   private async calendarUrl(sub: string): Promise<string> {
     return `${this.serverRoot()}/api/org-calendar/${await this.orgId()}${sub}`;
   }
+  private async bookingUrl(sub: string): Promise<string> {
+    return `${this.serverRoot()}/api/org-booking/${await this.orgId()}${sub}`;
+  }
+
+  /** Calendly-style booking on top of the org calendar: define public
+   *  booking PAGES and their meeting/service TYPES, and triage incoming
+   *  BOOKINGS (approve / decline / cancel). The customer-facing self-service
+   *  side is booking.public(token) / the standalone createPublicBooking() —
+   *  no API key, browser-safe. Uses the calendar:read / calendar:write scopes. */
+  readonly booking = {
+    /** Booking pages — one per calendar, each with its own public token. */
+    pages: {
+      /** Every booking page in the org. */
+      list: async (): Promise<BookingPage[]> => {
+        const { json } = await this.requestUrl(await this.bookingUrl("/pages"), { method: "GET" }, false);
+        return (json as { pages?: Array<Record<string, unknown>> } | null)?.pages?.map(toBookingPage) ?? [];
+      },
+      /** One page with its meeting types. */
+      get: async (pageId: number): Promise<{ page: BookingPage; types: BookingType[] }> => {
+        const { json } = await this.requestUrl(await this.bookingUrl(`/pages/${pageId}`), { method: "GET" }, false);
+        const j = (json ?? {}) as { page?: Record<string, unknown>; types?: Array<Record<string, unknown>> };
+        if (!j.page) throw new SinnonError("Booking page not found.", 404, "not_found");
+        return { page: toBookingPage(j.page), types: (j.types ?? []).map(toBookingType) };
+      },
+      /** Create a booking page (defaults: Mon-Fri 09-17, requires approval off). */
+      create: async (params: CreateBookingPageParams): Promise<BookingPage> => {
+        const { json } = await this.requestUrl(await this.bookingUrl("/pages"), { method: "POST", body: JSON.stringify(bookingPageBody(params)) }, false);
+        const p = (json as { page?: Record<string, unknown> } | null)?.page;
+        if (!p) throw new SinnonError("Could not create the booking page.", 502, "create_failed");
+        return toBookingPage(p);
+      },
+      /** Patch a page (enable/disable, hours, branding, policy). */
+      update: async (pageId: number, patch: Partial<CreateBookingPageParams> & { enabled?: boolean }): Promise<BookingPage> => {
+        const { json } = await this.requestUrl(await this.bookingUrl(`/pages/${pageId}`), { method: "PATCH", body: JSON.stringify(bookingPageBody(patch)) }, false);
+        const p = (json as { page?: Record<string, unknown> } | null)?.page;
+        if (!p) throw new SinnonError("Could not update the booking page.", 502, "update_failed");
+        return toBookingPage(p);
+      },
+      /** Rotate the public token (the old /book link dies immediately). */
+      rotateToken: async (pageId: number): Promise<{ publicToken: string; publicUrl: string; publicPath: string }> => {
+        const { json } = await this.requestUrl(await this.bookingUrl(`/pages/${pageId}/rotate-token`), { method: "POST", body: "{}" }, false);
+        const j = (json ?? {}) as Record<string, unknown>;
+        return { publicToken: String(j.public_token ?? ""), publicUrl: String(j.public_url ?? ""), publicPath: String(j.public_path ?? "") };
+      },
+      /** Delete a page and all its meeting types. */
+      delete: async (pageId: number): Promise<void> => {
+        await this.requestUrl(await this.bookingUrl(`/pages/${pageId}`), { method: "DELETE" }, false);
+      },
+    },
+    /** Meeting / service types on a page. */
+    types: {
+      list: async (pageId: number): Promise<BookingType[]> => {
+        const { json } = await this.requestUrl(await this.bookingUrl(`/pages/${pageId}/types`), { method: "GET" }, false);
+        return (json as { types?: Array<Record<string, unknown>> } | null)?.types?.map(toBookingType) ?? [];
+      },
+      create: async (pageId: number, params: CreateBookingTypeParams): Promise<BookingType> => {
+        const { json } = await this.requestUrl(await this.bookingUrl(`/pages/${pageId}/types`), { method: "POST", body: JSON.stringify(bookingTypeBody(params)) }, false);
+        const t = (json as { type?: Record<string, unknown> } | null)?.type;
+        if (!t) throw new SinnonError("Could not create the meeting type.", 502, "create_failed");
+        return toBookingType(t);
+      },
+      update: async (typeId: number, patch: Partial<CreateBookingTypeParams>): Promise<BookingType> => {
+        const { json } = await this.requestUrl(await this.bookingUrl(`/types/${typeId}`), { method: "PATCH", body: JSON.stringify(bookingTypeBody(patch)) }, false);
+        const t = (json as { type?: Record<string, unknown> } | null)?.type;
+        if (!t) throw new SinnonError("Could not update the meeting type.", 502, "update_failed");
+        return toBookingType(t);
+      },
+      delete: async (typeId: number): Promise<void> => {
+        await this.requestUrl(await this.bookingUrl(`/types/${typeId}`), { method: "DELETE" }, false);
+      },
+    },
+    /** Incoming bookings (org triage), newest first. Filter by status/range. */
+    list: async (opts?: { status?: "pending" | "confirmed" | "cancelled" | "declined"; from?: string; to?: string }): Promise<Booking[]> => {
+      const qs = new URLSearchParams();
+      if (opts?.status) qs.set("status", opts.status);
+      if (opts?.from) qs.set("from", opts.from);
+      if (opts?.to) qs.set("to", opts.to);
+      const { json } = await this.requestUrl(await this.bookingUrl(`/bookings${qs.size ? `?${qs}` : ""}`), { method: "GET" }, false);
+      return (json as { bookings?: Array<Record<string, unknown>> } | null)?.bookings?.map(toBooking) ?? [];
+    },
+    /** Approve a pending booking (confirms it + emails the booker). */
+    approve: async (bookingId: number): Promise<Booking> => {
+      const { json } = await this.requestUrl(await this.bookingUrl(`/bookings/${bookingId}/approve`), { method: "POST", body: "{}" }, false);
+      return toBooking((json as { booking?: Record<string, unknown> } | null)?.booking ?? {});
+    },
+    /** Decline a pending booking, with an optional reason. */
+    decline: async (bookingId: number, reason?: string): Promise<Booking> => {
+      const { json } = await this.requestUrl(await this.bookingUrl(`/bookings/${bookingId}/decline`), { method: "POST", body: JSON.stringify({ reason: reason ?? "" }) }, false);
+      return toBooking((json as { booking?: Record<string, unknown> } | null)?.booking ?? {});
+    },
+    /** Cancel a confirmed/pending booking, with an optional reason. */
+    cancel: async (bookingId: number, reason?: string): Promise<Booking> => {
+      const { json } = await this.requestUrl(await this.bookingUrl(`/bookings/${bookingId}/cancel`), { method: "POST", body: JSON.stringify({ reason: reason ?? "" }) }, false);
+      return toBooking((json as { booking?: Record<string, unknown> } | null)?.booking ?? {});
+    },
+    /** A browser-safe public booker bound to a page token — the same client,
+     *  no auth added on the public endpoints. */
+    public: (token: string): PublicBooker =>
+      createPublicBooking({ token, baseUrl: this.serverRoot(), fetch: this.fetchImpl, timeoutMs: this.timeoutMs }),
+  };
 
   /** The org's wireframe library — low-fi UI specs that double as
    *  machine-readable build contracts. Generate a spec from a prompt or a

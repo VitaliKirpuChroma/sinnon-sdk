@@ -2,6 +2,21 @@
 
 ## Shipped
 
+- **`@sinnon/sdk` `booking` (0.8.0)** — Calendly-style scheduling on top of the
+  org calendar. Authed org side (`booking.pages.*` create/list/get/update/
+  rotateToken/delete, `booking.types.*`, and triage `booking.list()` /
+  `approve()` / `decline()` / `cancel()`) rides the existing
+  `/api/org-booking/:orgId` routes via the org-resolve pattern, reusing the
+  `calendar:read` / `calendar:write` scopes (booking is part of calendar, no new
+  scope). Plus a standalone, **key-less, browser-safe public booker** —
+  `createPublicBooking({ token })` and `client.booking.public(token)` — wrapping
+  the token-scoped `/api/public/booking/:token` endpoints (`config()` /
+  `slots()` / `book()` / `getBooking()` / `reschedule()` / `cancel()` /
+  `geocode()` / `reverseGeocode()`), so a custom booking widget can run on any
+  customer site with no secret. Verified end-to-end: SDK-provisioned page/types,
+  a browser widget booked through the public booker, and the org side read the
+  booking back via `booking.list()`.
+
 - **`@sinnon/sdk` `containers` (0.7.0)** — bare compute from code: `list()` /
   `get()` / `plans()` / `create({ plan | shape, sleep, idempotencyKey })`
   (billed from the org's prepaid balance; nano €2 / micro €4 / small €7 per
