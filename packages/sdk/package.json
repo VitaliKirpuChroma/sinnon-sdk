@@ -13,10 +13,14 @@
     "sdk"
   ],
   "license": "MIT",
-  "homepage": "https://www.sinnon.net",
+  "homepage": "https://www.sinnon.net/sdk",
   "repository": {
     "type": "git",
-    "url": "https://sinnon.net/git/soliton_sdk"
+    "url": "git+https://github.com/VitaliKirpuChroma/sinnon-sdk.git",
+    "directory": "packages/sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/VitaliKirpuChroma/sinnon-sdk/issues"
   },
   "type": "module",
   "main": "./dist/cjs/index.js",
