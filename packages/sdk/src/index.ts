@@ -67,6 +67,14 @@ export interface CompleteResult {
 export interface ModelInfo {
   id: string;
   owned_by: string;
+  /** Retail rate the model is billed at (markup included), in EUR per
+   *  million tokens. Present on platforms that advertise pricing; each
+   *  billed call rounds up to the whole cent (see minBilledPerCallEur). */
+  pricing?: {
+    inputEurPerMtok: number;
+    outputEurPerMtok: number;
+    minBilledPerCallEur: number;
+  };
 }
 
 export interface ExtractParams {
@@ -1226,11 +1234,22 @@ export class SinnonClient {
   }
 
   readonly models = {
-    /** List the models available on the metered API. */
+    /** List the models available on the metered API, with each model's
+     *  retail pricing so cost is knowable before the first billed call. */
     list: async (): Promise<ModelInfo[]> => {
       const { json } = await this.request("/models", { method: "GET" });
-      const data = (json as { data?: Array<{ id: string; owned_by: string }> } | null)?.data ?? [];
-      return data.map((m) => ({ id: m.id, owned_by: m.owned_by }));
+      const data = (json as { data?: Array<{ id: string; owned_by: string; pricing?: { input_eur_per_mtok?: number; output_eur_per_mtok?: number; min_billed_per_call_eur?: number } }> } | null)?.data ?? [];
+      return data.map((m) => ({
+        id: m.id,
+        owned_by: m.owned_by,
+        ...(m.pricing ? {
+          pricing: {
+            inputEurPerMtok: Number(m.pricing.input_eur_per_mtok ?? 0),
+            outputEurPerMtok: Number(m.pricing.output_eur_per_mtok ?? 0),
+            minBilledPerCallEur: Number(m.pricing.min_billed_per_call_eur ?? 0.01),
+          },
+        } : {}),
+      }));
     },
 
     /** One-shot completion, billed per token from the org's model balance
