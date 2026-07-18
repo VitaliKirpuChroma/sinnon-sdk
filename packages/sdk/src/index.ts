@@ -110,11 +110,17 @@ export interface SessionInfo {
 
 /** One event from agent.watch(). "output" carries decoded terminal text;
  *  "input" is what was typed into the session (usually echoed in output
- *  too); "exit" ends the stream; "event" passes through anything else the
+ *  too); "busy"/"idle" are turn-state transitions (the agent CLI announces
+ *  them via a private OSC marker — "idle" means the turn finished and the
+ *  session is warm at its prompt, which is how a dispatched task signals
+ *  completion: sessions are coworkers, they don't exit after one task);
+ *  "exit" ends the stream; "event" passes through anything else the
  *  recording carries (start/resize/clipboard), raw. */
 export type WatchEvent =
   | { type: "output"; text: string; at: number }
   | { type: "input"; text: string; at: number }
+  | { type: "busy"; at: number }
+  | { type: "idle"; at: number }
   | { type: "exit"; status: string; code?: number | null }
   | { type: "event"; raw: Record<string, unknown> };
 
@@ -1162,6 +1168,9 @@ export interface BookingType {
   questions: BookingQuestion[];
   sortOrder: number;
   active: boolean;
+  /** 'appointment' (booker picks a time slot) | 'request' (no time — inquiry/
+   *  quote/callback that lands as a request; the public booker skips the calendar). */
+  scheduling: "appointment" | "request" | string;
 }
 /** One submitted booking (the org triage view). */
 export interface Booking {
@@ -1202,7 +1211,9 @@ export interface CreateBookingPageParams {
 }
 export interface CreateBookingTypeParams {
   name: string;
-  durationMinutes: number;
+  /** Slot length in minutes (5–1440). Required for appointment types; optional
+   *  for scheduling:"request" types (they have no time slot). */
+  durationMinutes?: number;
   description?: string;
   bufferBeforeMinutes?: number;
   bufferAfterMinutes?: number;
@@ -1212,6 +1223,9 @@ export interface CreateBookingTypeParams {
   color?: string;
   questions?: BookingQuestion[];
   active?: boolean;
+  /** 'appointment' (default, pick a slot) or 'request' (no time; an inquiry/
+   *  quote/callback). Request types skip the calendar in the public booker. */
+  scheduling?: "appointment" | "request";
 }
 
 // ── Public self-service booking (no API key; the bp_ token is the capability) ─
@@ -1225,6 +1239,8 @@ export interface PublicBookingType {
   videoProvider: string;
   color: string;
   questions: BookingQuestion[];
+  /** 'appointment' (pick a slot) | 'request' (no time — skip the calendar). */
+  scheduling: "appointment" | "request" | string;
 }
 export interface PublicBookingConfig {
   title: string;
@@ -1242,8 +1258,9 @@ export interface BookRequest {
   typeId: number;
   name: string;
   email: string;
-  /** UTC instant: "YYYY-MM-DD HH:MM:SS" or ISO 8601. Use a slot from slots(). */
-  startsAt: string;
+  /** UTC instant: "YYYY-MM-DD HH:MM:SS" or ISO 8601. Use a slot from slots().
+   *  Optional for 'request'-mode types (no time — the booker sends none). */
+  startsAt?: string;
   phone?: string;
   /** Answers to the type's questions — by question id, or as {id,value} pairs. */
   answers?: Record<string, string> | Array<{ id: string; value: string }>;
@@ -1355,6 +1372,7 @@ function toBookingType(t: Record<string, unknown>): BookingType {
     questions: toBookingQuestions(t.questions),
     sortOrder: Number(t.sort_order ?? 0),
     active: t.active === true,
+    scheduling: String(t.scheduling ?? "appointment"),
   };
 }
 function toBooking(b: Record<string, unknown>): Booking {
@@ -1407,6 +1425,7 @@ function bookingTypeBody(t: Partial<CreateBookingTypeParams>): Record<string, un
   if (t.color !== undefined) body.color = t.color;
   if (t.questions !== undefined) body.questions = t.questions;
   if (t.active !== undefined) body.active = t.active;
+  if (t.scheduling !== undefined) body.scheduling = t.scheduling;
   return body;
 }
 
@@ -1479,6 +1498,7 @@ export function createPublicBooking(options: PublicBookingOptions): PublicBooker
           videoProvider: String(t.video_provider ?? ""),
           color: String(t.color ?? ""),
           questions: toBookingQuestions(t.questions),
+          scheduling: String(t.scheduling ?? "appointment"),
         })),
       };
     },
@@ -1495,7 +1515,7 @@ export function createPublicBooking(options: PublicBookingOptions): PublicBooker
         : Object.entries(req.answers ?? {}).map(([id, value]) => ({ id, value: String(value) }));
       const j = await call("/book", {
         method: "POST",
-        body: JSON.stringify({ type: req.typeId, name: req.name, email: req.email, phone: req.phone ?? "", starts_at: req.startsAt, answers }),
+        body: JSON.stringify({ type: req.typeId, name: req.name, email: req.email, phone: req.phone ?? "", ...(req.startsAt ? { starts_at: req.startsAt } : {}), answers }),
       });
       return {
         status: String(j.status ?? ""),
@@ -1540,6 +1560,522 @@ export function createPublicBooking(options: PublicBookingOptions): PublicBooker
       const j = await call(`/geocode-reverse?lat=${lat}&lng=${lng}`);
       return { label: String(j.label ?? ""), lat: Number(j.lat ?? lat), lng: Number(j.lng ?? lng) };
     },
+  };
+}
+
+// ── Articles / storefront / chat: shared types + key-less public readers ──
+// The three surfaces a generated website needs — content pages, a shop, and
+// a support widget — each with a browser-safe reader that carries no secret,
+// mirroring createPublicBooking above.
+
+const PUBLIC_ROOT = "https://www.sinnon.net";
+
+// Obfuscated org id used as a storefront's public handle (mirror of the
+// backend encodeOrgId + frontend orgHash.ts). Not a secret — prices are
+// public and the seller is resolved server-side.
+const ORG_HASH_MASK = 0x7b1d;
+function encodeOrgPublicCode(id: number): string {
+  return ((id ^ ORG_HASH_MASK) + ORG_HASH_MASK).toString(36);
+}
+
+/** A published (or your own draft) blog/article. Fields marked author* /
+ *  *Avatar* are present on public reads (feed / by-slug); authed reads and
+ *  the org list omit the enrichment. */
+export interface Article {
+  id: number;
+  slug: string;
+  customSlug: string | null;
+  title: string;
+  subtitle: string | null;
+  summary: string;
+  coverImageUrl: string | null;
+  bodyMd: string;
+  tags: string[];
+  status: string;
+  readingMinutes: number;
+  viewCount: number;
+  reactionCount: number;
+  commentCount: number;
+  donationsEnabled: boolean;
+  publishedAt: string | null;
+  authorName: string;
+  authorOperatorId: number;
+  orgId: number | null;
+  orgName: string | null;
+  authorUsername?: string | null;
+  authorAvatarUrl?: string | null;
+}
+
+export interface ArticleComment {
+  id: number;
+  articleId: number;
+  parentId: number | null;
+  authorName: string;
+  bodyMd: string;
+  deleted: boolean;
+  createdAt: string;
+  authorUsername?: string | null;
+}
+
+/** A storefront product. `status` / `createdAt` / `updatedAt` are present on
+ *  the authed catalog reads and omitted from the public storefront. */
+export interface StoreProduct {
+  id: number;
+  name: string;
+  description: string;
+  sku: string | null;
+  priceCents: number;
+  currency: string;
+  stock: number | null;
+  imageUrl: string;
+  status?: "active" | "archived";
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/** One online storefront order (the sell-side view). */
+export interface StoreOrder {
+  id: number;
+  productId: number;
+  productName: string;
+  quantity: number;
+  buyerEmail: string;
+  grossCents: number;
+  feeCents: number;
+  netCents: number;
+  currency: string;
+  status: "pending" | "paid" | "refunded";
+  createdAt: number;
+  paidAt: number | null;
+}
+
+/** An operator's or org's public brand kit — everything a generated site
+ *  needs to theme itself. NOTE: there is no operator brand-*color* field on
+ *  the platform today (only chat widgets carry an accent), so `accent` is
+ *  usually empty; use `avatarUrl` + `name` + `bio` to brand a page. */
+export interface BrandKit {
+  kind: "org" | "operator";
+  id: number | null;
+  name: string;
+  handle: string;
+  avatarUrl: string | null;
+  avatarSeed: string | null;
+  bio: string;
+  tagline: string;
+  accent: string;
+  techStack: string[];
+  socialLinks: Record<string, string>;
+  chatLink: string;
+  videoIntro: string;
+  layout: { order: string[]; rows: unknown[]; hidden: string[] } | null;
+  raw: Record<string, unknown>;
+}
+
+function rec(v: unknown): Record<string, unknown> {
+  return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+}
+function recArray(v: unknown): Record<string, unknown>[] {
+  return Array.isArray(v) ? v.filter((r) => r && typeof r === "object") as Record<string, unknown>[] : [];
+}
+function strArray(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((s): s is string => typeof s === "string") : [];
+}
+
+function toArticle(r: Record<string, unknown>): Article {
+  return {
+    id: Number(r.id),
+    slug: String(r.slug ?? ""),
+    customSlug: typeof r.custom_slug === "string" ? r.custom_slug : null,
+    title: String(r.title ?? ""),
+    subtitle: typeof r.subtitle === "string" ? r.subtitle : null,
+    summary: String(r.summary ?? ""),
+    coverImageUrl: typeof r.cover_image_url === "string" ? r.cover_image_url : null,
+    bodyMd: String(r.body_md ?? ""),
+    tags: strArray(r.tags),
+    status: String(r.status ?? ""),
+    readingMinutes: Number(r.reading_minutes ?? 0),
+    viewCount: Number(r.view_count ?? 0),
+    reactionCount: Number(r.reaction_count ?? 0),
+    commentCount: Number(r.comment_count ?? 0),
+    donationsEnabled: r.donations_enabled === true || r.donations_enabled === 1,
+    publishedAt: typeof r.published_at === "string" ? r.published_at : null,
+    authorName: String(r.author_name ?? ""),
+    authorOperatorId: Number(r.author_operator_id ?? 0),
+    orgId: typeof r.org_id === "number" ? r.org_id : null,
+    orgName: typeof r.org_name === "string" ? r.org_name : null,
+    ...(r.author_username != null ? { authorUsername: String(r.author_username) } : {}),
+    ...(r.author_avatar_url != null ? { authorAvatarUrl: String(r.author_avatar_url) } : {}),
+  };
+}
+function toArticleComment(r: Record<string, unknown>): ArticleComment {
+  return {
+    id: Number(r.id),
+    articleId: Number(r.article_id ?? 0),
+    parentId: typeof r.parent_id === "number" ? r.parent_id : null,
+    authorName: String(r.author_name ?? ""),
+    bodyMd: String(r.body_md ?? ""),
+    deleted: r.deleted === 1 || r.deleted === true,
+    createdAt: String(r.created_at ?? ""),
+    ...(r.author_username != null ? { authorUsername: String(r.author_username) } : {}),
+  };
+}
+function toStoreProduct(r: Record<string, unknown>): StoreProduct {
+  return {
+    id: Number(r.id),
+    name: String(r.name ?? ""),
+    description: String(r.description ?? ""),
+    sku: typeof r.sku === "string" ? r.sku : null,
+    priceCents: Number(r.price_cents ?? 0),
+    currency: String(r.currency ?? "eur"),
+    stock: r.stock == null ? null : Number(r.stock),
+    imageUrl: String(r.image_url ?? ""),
+    ...(r.status != null ? { status: r.status === "archived" ? "archived" : "active" } : {}),
+    ...(r.created_at != null ? { createdAt: String(r.created_at) } : {}),
+    ...(r.updated_at != null ? { updatedAt: String(r.updated_at) } : {}),
+  };
+}
+function toBrandKit(node: Record<string, unknown>, kind: "org" | "operator"): BrandKit {
+  const socials: Record<string, string> = {};
+  const rawSocials = rec(node.social_links);
+  for (const [k, v] of Object.entries(rawSocials)) if (typeof v === "string" && v) socials[k] = v;
+  const layoutNode = rec(node.branding_layout);
+  return {
+    kind,
+    id: typeof node.id === "number" ? node.id : (typeof node.user_id === "number" ? node.user_id : null),
+    name: String(node.name ?? node.username ?? [node.first_name, node.last_name].filter(Boolean).join(" ") ?? ""),
+    handle: String(node.handle ?? ""),
+    avatarUrl: typeof node.avatar_url === "string" ? node.avatar_url : null,
+    avatarSeed: typeof node.avatar_seed === "string" ? node.avatar_seed : null,
+    bio: String(node.bio ?? ""),
+    tagline: String(node.availability_note ?? ""),
+    accent: String(node.accent ?? ""),
+    techStack: strArray(node.tech_stack),
+    socialLinks: socials,
+    chatLink: String(node.chat_link ?? ""),
+    videoIntro: String(node.branding_video ?? ""),
+    layout: Object.keys(layoutNode).length
+      ? { order: strArray(node.branding_order), rows: Array.isArray(layoutNode.rows) ? layoutNode.rows : [], hidden: strArray(layoutNode.hidden) }
+      : null,
+    raw: node,
+  };
+}
+
+// Shared browser-safe caller for the key-less public readers below — JSON
+// in/out, per-call timeout, SinnonError on non-2xx. Tolerates both platform
+// error envelopes ({ error: "..." } and { error: { message } }).
+async function publicJsonCall(
+  base: string, sub: string, doFetch: typeof fetch, timeoutMs: number, label: string, init?: RequestInit,
+): Promise<Record<string, unknown>> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await doFetch(`${base}${sub}`, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        Accept: "application/json",
+        ...(init?.body && !(typeof FormData !== "undefined" && init.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
+        ...(init?.headers as Record<string, string> | undefined),
+      },
+    });
+    const json = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!res.ok) {
+      const errVal = (json as { error?: unknown })?.error;
+      const msg = typeof errVal === "string" ? errVal
+        : (errVal && typeof errVal === "object" && typeof (errVal as { message?: unknown }).message === "string")
+          ? (errVal as { message: string }).message
+          : `${label} request failed (${res.status})`;
+      const type = errVal && typeof errVal === "object" && typeof (errVal as { type?: unknown }).type === "string"
+        ? (errVal as { type: string }).type
+        : (typeof (json as { code?: unknown })?.code === "string" ? (json as { code: string }).code : undefined);
+      throw new SinnonError(msg, res.status, type);
+    }
+    return json ?? {};
+  } catch (e) {
+    if (e instanceof SinnonError) throw e;
+    if (e instanceof Error && e.name === "AbortError") throw new SinnonError(`Request timed out after ${timeoutMs}ms`, 408, "timeout");
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export interface PublicReaderOptions {
+  /** Server root. Default the SINNON cloud; pass "" for same-origin when the
+   *  site proxies /api to the platform. */
+  baseUrl?: string;
+  fetch?: typeof fetch;
+  timeoutMs?: number;
+}
+
+// ── Public articles reader (the generated site's blog) ──────────────────
+export interface PublicArticlesReader {
+  feed(opts?: { sort?: "latest" | "trending"; limit?: number; offset?: number }): Promise<Article[]>;
+  article(slug: string): Promise<Article>;
+  comments(articleId: number): Promise<ArticleComment[]>;
+  reactions(articleId: number): Promise<Record<string, number>>;
+  byOperator(operatorId: number, opts?: { limit?: number; offset?: number }): Promise<Article[]>;
+  byOrg(orgId: number, opts?: { limit?: number; offset?: number }): Promise<Article[]>;
+  mediaUrl(siloSlug: string, mediaSlug: string): string;
+}
+
+export function createPublicArticles(options: PublicReaderOptions = {}): PublicArticlesReader {
+  const root = (options.baseUrl ?? PUBLIC_ROOT).replace(/\/+$/, "");
+  const base = `${root}/api/public/medium`;
+  const doFetch = options.fetch ?? fetch;
+  const timeoutMs = typeof options.timeoutMs === "number" && options.timeoutMs > 0 ? options.timeoutMs : 30_000;
+  const call = (sub: string) => publicJsonCall(base, sub, doFetch, timeoutMs, "Articles");
+  const listQs = (opts?: { limit?: number; offset?: number; sort?: string }) => {
+    const qs = new URLSearchParams();
+    if (opts?.sort) qs.set("sort", opts.sort);
+    if (opts?.limit != null) qs.set("limit", String(opts.limit));
+    if (opts?.offset != null) qs.set("offset", String(opts.offset));
+    return qs.size ? `?${qs}` : "";
+  };
+  return {
+    async feed(opts) { return recArray((await call(`/feed${listQs(opts)}`)).articles).map(toArticle); },
+    async article(slug) {
+      const a = rec((await call(`/articles/${encodeURIComponent(slug)}`)).article);
+      if (!a.id) throw new SinnonError("Article not found.", 404, "not_found");
+      return toArticle(a);
+    },
+    async comments(articleId) { return recArray((await call(`/articles/${articleId}/comments`)).comments).map(toArticleComment); },
+    async reactions(articleId) {
+      const s = rec((await call(`/articles/${articleId}/reactions`)).summary);
+      const out: Record<string, number> = {};
+      for (const [k, v] of Object.entries(s)) out[k] = Number(v);
+      return out;
+    },
+    async byOperator(operatorId, opts) { return recArray((await call(`/operator/${operatorId}${listQs(opts)}`)).articles).map(toArticle); },
+    async byOrg(orgId, opts) { return recArray((await call(`/org/${orgId}${listQs(opts)}`)).articles).map(toArticle); },
+    mediaUrl(siloSlug, mediaSlug) { return `${base}/media/${encodeURIComponent(siloSlug)}/${encodeURIComponent(mediaSlug)}`; },
+  };
+}
+
+// ── Public storefront reader (the generated site's shop) ────────────────
+export interface PublicStoreCheckoutParams {
+  productId: number;
+  quantity?: number;
+  buyerEmail?: string;
+  /** Where Stripe returns the buyer after paying / cancelling. Default the
+   *  origin the request came from. */
+  successUrl?: string;
+  cancelUrl?: string;
+}
+export interface PublicStoreReader {
+  store(): Promise<{ name: string; currency: string; products: StoreProduct[] }>;
+  products(): Promise<StoreProduct[]>;
+  product(id: number): Promise<StoreProduct>;
+  /** Start a hosted Stripe Checkout for one product line. Returns the URL to
+   *  send the buyer to. */
+  checkout(params: PublicStoreCheckoutParams): Promise<{ url: string; orderId: number | null }>;
+}
+export interface PublicStoreOptions extends PublicReaderOptions {
+  /** The storefront's public code — sinnon.store.publicCode() on the seller
+   *  side. */
+  code: string;
+}
+
+export function createPublicStore(options: PublicStoreOptions): PublicStoreReader {
+  const code = options.code;
+  if (!code) throw new SinnonError("A storefront code is required.", 400, "code_required");
+  const root = (options.baseUrl ?? PUBLIC_ROOT).replace(/\/+$/, "");
+  const base = `${root}/api/public/store/${encodeURIComponent(code)}`;
+  const doFetch = options.fetch ?? fetch;
+  const timeoutMs = typeof options.timeoutMs === "number" && options.timeoutMs > 0 ? options.timeoutMs : 30_000;
+  const call = (sub: string, init?: RequestInit) => publicJsonCall(base, sub, doFetch, timeoutMs, "Store", init);
+  return {
+    async store() {
+      const j = await call("/products");
+      const s = rec(j.store);
+      return { name: String(s.name ?? ""), currency: String(s.currency ?? "eur"), products: recArray(j.products).map(toStoreProduct) };
+    },
+    async products() { return recArray((await call("/products")).products).map(toStoreProduct); },
+    async product(id) {
+      const p = rec((await call(`/products/${id}`)).product);
+      if (!p.id) throw new SinnonError("Product not found.", 404, "not_found");
+      return toStoreProduct(p);
+    },
+    async checkout(params) {
+      const body: Record<string, unknown> = { product_id: params.productId };
+      if (params.quantity != null) body.quantity = params.quantity;
+      if (params.buyerEmail) body.buyer_email = params.buyerEmail;
+      if (params.successUrl) body.success_url = params.successUrl;
+      if (params.cancelUrl) body.cancel_url = params.cancelUrl;
+      const j = await call("/checkout", { method: "POST", body: JSON.stringify(body) });
+      return { url: String(j.url ?? ""), orderId: typeof j.order_id === "number" ? j.order_id : null };
+    },
+  };
+}
+
+// ── Public chat widget (the generated site's support / AI chat) ─────────
+export interface PublicChatConfig {
+  name: string;
+  accent: string;
+  welcome: string;
+  placeholder: string;
+  subtitle: string;
+  theme: "light" | "dark";
+  logoUrl: string;
+  hideBranding: boolean;
+  configured: boolean;
+  accessMode: string;
+  multiThread: boolean;
+  liveSupport: boolean;
+  hoursEnabled: boolean;
+  open: boolean;
+  awayMessage: string;
+  hoursSummary: string;
+}
+export interface PublicChatSendResult {
+  runId: string | null;
+  totalSteps: number;
+  closed: boolean;
+  reply: string | null;
+}
+export interface PublicChatPoll {
+  status: string;
+  stepCount: number;
+  statusMessages: Array<{ message: string; style: string }>;
+  reply: string | null;
+}
+export interface PublicChatWidget {
+  config(): Promise<PublicChatConfig>;
+  /** Send one visitor message; returns a run id to poll (or an immediate
+   *  reply when the chat is closed/off-hours). */
+  send(message: string, opts?: { history?: ChatMessage[]; clientId?: string; conversationId?: string }): Promise<PublicChatSendResult>;
+  poll(runId: string, opts?: { since?: number }): Promise<PublicChatPoll>;
+  /** Convenience: send + poll to completion, resolving the assistant's reply
+   *  text. The one-liner a widget needs. */
+  ask(message: string, opts?: { history?: ChatMessage[]; clientId?: string; pollIntervalMs?: number; timeoutMs?: number }): Promise<string>;
+}
+
+export interface PublicChatOptions extends PublicReaderOptions {
+  token: string;
+}
+
+export function createPublicChat(options: PublicChatOptions): PublicChatWidget {
+  const token = options.token;
+  if (!token) throw new SinnonError("A chat widget token is required.", 400, "token_required");
+  const root = (options.baseUrl ?? PUBLIC_ROOT).replace(/\/+$/, "");
+  const base = `${root}/api/public/chat/${encodeURIComponent(token)}`;
+  const doFetch = options.fetch ?? fetch;
+  const timeoutMs = typeof options.timeoutMs === "number" && options.timeoutMs > 0 ? options.timeoutMs : 30_000;
+  const call = (sub: string, init?: RequestInit) => publicJsonCall(base, sub, doFetch, timeoutMs, "Chat", init);
+  const replyText = (r: unknown): string | null => {
+    const o = rec(r);
+    return typeof o.text === "string" ? o.text : null;
+  };
+  const widget: PublicChatWidget = {
+    async config() {
+      const j = await call("");
+      return {
+        name: String(j.name ?? ""),
+        accent: String(j.accent ?? ""),
+        welcome: String(j.welcome ?? ""),
+        placeholder: String(j.placeholder ?? ""),
+        subtitle: String(j.subtitle ?? ""),
+        theme: j.theme === "dark" ? "dark" : "light",
+        logoUrl: String(j.logo_url ?? ""),
+        hideBranding: j.hide_branding === true,
+        configured: j.configured === true,
+        accessMode: String(j.access_mode ?? "anonymous"),
+        multiThread: j.multi_thread === true,
+        liveSupport: j.live_support === true,
+        hoursEnabled: j.hours_enabled === true,
+        open: j.open !== false,
+        awayMessage: String(j.away_message ?? ""),
+        hoursSummary: String(j.hours_summary ?? ""),
+      };
+    },
+    async send(message, opts) {
+      const body: Record<string, unknown> = { message };
+      if (opts?.history) body.history = opts.history;
+      if (opts?.clientId) body.client_id = opts.clientId;
+      if (opts?.conversationId) body.conversation_id = opts.conversationId;
+      const j = await call("/message", { method: "POST", body: JSON.stringify(body) });
+      return {
+        runId: typeof j.run_id === "string" ? j.run_id : null,
+        totalSteps: Number(j.total_steps ?? 0),
+        closed: j.closed === true,
+        reply: j.closed === true ? replyText(j.reply) : null,
+      };
+    },
+    async poll(runId, opts) {
+      const qs = opts?.since != null ? `?since=${opts.since}` : "";
+      const j = await call(`/poll/${encodeURIComponent(runId)}${qs}`);
+      return {
+        status: String(j.status ?? ""),
+        stepCount: Number(j.step_count ?? 0),
+        statusMessages: recArray(j.status_messages).map((m) => ({ message: String(m.message ?? ""), style: String(m.style ?? "") })),
+        reply: replyText(j.reply),
+      };
+    },
+    async ask(message, opts) {
+      const sent = await widget.send(message, { history: opts?.history, clientId: opts?.clientId });
+      if (sent.closed) return sent.reply ?? "";
+      if (!sent.runId) throw new SinnonError("Chat did not start a run.", 502, "chat_failed");
+      const interval = typeof opts?.pollIntervalMs === "number" && opts.pollIntervalMs > 0 ? opts.pollIntervalMs : 1000;
+      const deadline = Date.now() + (typeof opts?.timeoutMs === "number" && opts.timeoutMs > 0 ? opts.timeoutMs : 120_000);
+      for (;;) {
+        const p = await widget.poll(sent.runId);
+        if (p.status === "done" || p.status === "error") return p.reply ?? "";
+        if (Date.now() > deadline) throw new SinnonError("Chat reply timed out.", 408, "timeout");
+        await new Promise((r) => setTimeout(r, interval));
+      }
+    },
+  };
+  return widget;
+}
+
+export interface CreateArticleParams {
+  title: string;
+  subtitle?: string;
+  summary?: string;
+  coverImageUrl?: string;
+  bodyMd?: string;
+  tags?: string[];
+  /** Show a "Support the writer" tip button on the published article. */
+  donationsEnabled?: boolean;
+}
+
+export interface CreateStoreProductParams {
+  name: string;
+  description?: string;
+  sku?: string | null;
+  priceCents: number;
+  /** null (or omitted) = unlimited stock; a number decrements per sale. */
+  stock?: number | null;
+  imageUrl?: string;
+}
+
+function toStoreOrder(r: Record<string, unknown>): StoreOrder {
+  return {
+    id: Number(r.id),
+    productId: Number(r.product_id ?? 0),
+    productName: String(r.product_name ?? ""),
+    quantity: Number(r.quantity ?? 0),
+    buyerEmail: String(r.buyer_email ?? ""),
+    grossCents: Number(r.gross_cents ?? 0),
+    feeCents: Number(r.fee_cents ?? 0),
+    netCents: Number(r.net_cents ?? 0),
+    currency: String(r.currency ?? "eur"),
+    status: r.status === "paid" || r.status === "refunded" ? r.status : "pending",
+    createdAt: Number(r.created_at ?? 0),
+    paidAt: typeof r.paid_at === "number" ? r.paid_at : null,
+  };
+}
+
+function toCustomerInfo(r: Record<string, unknown>): CustomerInfo {
+  return {
+    id: Number(r.id),
+    email: String(r.email ?? ""),
+    displayName: String(r.display_name ?? ""),
+    createdAt: typeof r.created_at === "string" ? r.created_at : null,
+    lastLoginAt: typeof r.last_login_at === "string" ? r.last_login_at : null,
+    licenseCountActive: Number(r.license_count_active ?? 0),
+    licenseCountTotal: Number(r.license_count_total ?? 0),
+    totalSpentCents: Number(r.total_spent_cents ?? 0),
   };
 }
 
@@ -1865,17 +2401,27 @@ export class SinnonClient {
       return rows.map((r) => this.toAgent(r));
     },
 
-    /** One agent by id. */
-    get: async (id: number): Promise<Agent> => {
-      const { json } = await this.request(`/agents/${id}`, { method: "GET" });
+    /** One agent by id, or by its exact name (resolved via list). */
+    get: async (idOrName: number | string): Promise<Agent> => {
+      if (typeof idOrName === "string" && !/^\d+$/.test(idOrName)) {
+        const all = await this.agents.list();
+        const hit = all.find((a) => a.name === idOrName);
+        if (!hit) throw new SinnonError(`No agent named "${idOrName}".`, 404, "not_found");
+        return hit;
+      }
+      const { json } = await this.request(`/agents/${idOrName}`, { method: "GET" });
       const row = (json as { agent?: { id: number; name?: string; status?: string; ready?: boolean } } | null)?.agent;
       if (!row) throw new SinnonError("Agent not found.", 404, "not_found");
       return this.toAgent(row);
     },
 
     /** Provision a new agent (free tier in your personal org for now).
-     *  Provisioning is async — call `waitUntilReady()` on the result. */
-    create: async (params?: { name?: string }): Promise<PendingAgent> => {
+     *  Provisioning is async — `await agent.waitUntilReady()` first. The
+     *  returned handle carries the FULL agent surface: after waitUntilReady
+     *  resolves, calls like `agent.dispatch(...)` delegate to the live agent
+     *  (so the docs' one-variable shape works); before that they throw a
+     *  clear not_ready error instead of "is not a function". */
+    create: async (params?: { name?: string }): Promise<PendingAgent & Agent> => {
       const before = new Set((await this.agents.list().catch(() => [])).map((a) => a.id));
       const { json } = await this.request("/agents", {
         method: "POST",
@@ -1884,29 +2430,48 @@ export class SinnonClient {
       const orderId = Number((json as { order_id?: number } | null)?.order_id);
       const name = (json as { name?: string | null } | null)?.name ?? params?.name ?? null;
       const self = this;
-      return {
-        status: "provisioning",
-        orderId,
-        name,
-        async waitUntilReady(opts) {
-          const deadline = Date.now() + (opts?.timeoutMs ?? 180_000);
-          const pollMs = opts?.pollMs ?? 4_000;
-          while (Date.now() < deadline) {
-            const fresh = (await self.agents.list()).find((a) => !before.has(a.id) && a.ready);
-            // The ready flag flips when the container is scheduled, a beat
-            // before it serves HTTP — confirm it actually responds so the
-            // very next call (dispatch) can't race the boot.
-            if (fresh && (await fresh.isLive())) {
-              // Apply the requested name now that the agent exists (the
-              // bucket assigns a random one at provision time).
-              if (name) { try { await fresh.rename(name); } catch { /* keep the auto name */ } }
-              return fresh;
-            }
-            await new Promise((r) => setTimeout(r, pollMs));
+      const pending: any = { status: "provisioning", orderId, name, _resolved: null };
+      pending.waitUntilReady = async (opts?: { timeoutMs?: number; pollMs?: number }) => {
+        if (pending._resolved) return pending._resolved as Agent;
+        const deadline = Date.now() + (opts?.timeoutMs ?? 300_000);
+        const pollMs = opts?.pollMs ?? 4_000;
+        while (Date.now() < deadline) {
+          const fresh = (await self.agents.list()).find((a) => !before.has(a.id) && a.ready);
+          // The ready flag flips when the container is scheduled, a beat
+          // before it serves HTTP — confirm it actually responds so the
+          // very next call (dispatch) can't race the boot.
+          if (fresh && (await fresh.isLive())) {
+            // Apply the requested name now that the agent exists (the
+            // bucket assigns a random one at provision time).
+            if (name) { try { await fresh.rename(name); } catch { /* keep the auto name */ } }
+            pending._resolved = fresh;
+            pending.status = "ready";
+            pending.name = fresh.name;
+            return fresh;
           }
-          throw new SinnonError("The new agent did not become ready in time.", 408, "timeout");
-        },
+          await new Promise((r) => setTimeout(r, pollMs));
+        }
+        throw new SinnonError("The new agent did not become ready in time.", 408, "timeout");
       };
+      return new Proxy(pending, {
+        get(target, prop, receiver) {
+          if (prop in target) return Reflect.get(target, prop, receiver);
+          const r: Agent | null = target._resolved;
+          if (!r) {
+            // Thenable/inspection probes (await, console.log, JSON) must not
+            // explode on a still-provisioning handle.
+            if (typeof prop !== "string" || ["then", "catch", "finally", "toJSON", "constructor"].includes(prop)) {
+              return undefined;
+            }
+            throw new SinnonError(
+              `The agent is still provisioning — await agent.waitUntilReady() before .${prop}.`,
+              409, "not_ready",
+            );
+          }
+          const v = (r as any)[prop];
+          return typeof v === "function" ? v.bind(r) : v;
+        },
+      }) as PendingAgent & Agent;
     },
   };
 
@@ -1987,7 +2552,7 @@ export class SinnonClient {
         name: j.name ?? params?.name ?? null,
         debitedEur: Number(j.debited_cents ?? 0) / 100,
         async waitUntilReady(opts) {
-          const deadline = Date.now() + (opts?.timeoutMs ?? 180_000);
+          const deadline = Date.now() + (opts?.timeoutMs ?? 300_000);
           const pollMs = opts?.pollMs ?? 4_000;
           while (Date.now() < deadline) {
             const fresh = await self.containers.get(id).catch(() => null);
@@ -2225,10 +2790,23 @@ export class SinnonClient {
       return approval;
     },
 
-    /** One approval by id. wait:true long-polls briefly server-side. */
+    /** One approval by id. wait:true long-polls briefly server-side (~25s);
+     *  it returns the CURRENT state, which may still be pending — use
+     *  wait() to block until the ask is actually decided. */
     get: async (id: number, opts?: { wait?: boolean }): Promise<Approval> => {
       const { json } = await this.request(`/approvals/${Math.floor(id)}${opts?.wait ? "?wait=1" : ""}`, { method: "GET" });
       return this.toApproval((json as { approval?: Record<string, unknown> } | null)?.approval ?? {});
+    },
+
+    /** Block until the ask is decided or expires — the same loop request()
+     *  runs when it waits. Pairs with request({ wait: false }) when you
+     *  want the reviewUrl in hand before you start waiting. */
+    wait: async (id: number): Promise<Approval> => {
+      let approval = await this.approvals.get(id, { wait: true });
+      while (approval.status === "pending") {
+        approval = await this.approvals.get(id, { wait: true });
+      }
+      return approval;
     },
 
     /** Recent approvals, newest first. */
@@ -3205,6 +3783,22 @@ export class SinnonClient {
         existed: j.existed === true,
       };
     },
+
+    /** One customer with their license counts + lifetime spend. */
+    get: async (id: number): Promise<CustomerInfo> => {
+      const { json } = await this.request(`/customers/${id}`, { method: "GET" });
+      const c = (json as { customer?: Record<string, unknown> } | null)?.customer;
+      if (!c) throw new SinnonError("Customer not found.", 404, "not_found");
+      return toCustomerInfo(c);
+    },
+
+    /** Rename a customer (display name only — email is the stable key). */
+    update: async (id: number, patch: { displayName: string }): Promise<CustomerInfo> => {
+      const { json } = await this.request(`/customers/${id}`, { method: "PATCH", body: JSON.stringify({ display_name: patch.displayName }) });
+      const c = (json as { customer?: Record<string, unknown> } | null)?.customer;
+      if (!c) throw new SinnonError("Customer not found.", 404, "not_found");
+      return toCustomerInfo(c);
+    },
   };
 
   /** Invoice your org's own customers: draft, send (emails a pay link and
@@ -3752,6 +4346,197 @@ export class SinnonClient {
   private async wireframesUrl(sub: string): Promise<string> {
     return `${this.serverRoot()}/api/org-wireframes/${await this.orgId()}${sub}`;
   }
+
+  /** Your organization's blog / content pages (the Medium-style CMS) — the
+   *  pages of a generated website. Articles are authored under the key's
+   *  minting operator and scoped to the key's org. The key-less public reader
+   *  every visitor uses is `articles.public()` / the standalone
+   *  createPublicArticles(). Scopes: articles:read / articles:write /
+   *  articles:publish (publish is held separate so a write key can draft
+   *  without pushing content public). */
+  readonly articles = {
+    /** Your articles (drafts + published), newest first. */
+    list: async (opts?: { limit?: number; offset?: number }): Promise<Article[]> => {
+      const qs = new URLSearchParams();
+      if (opts?.limit != null) qs.set("limit", String(opts.limit));
+      if (opts?.offset != null) qs.set("offset", String(opts.offset));
+      const { json } = await this.requestUrl(this.articlesUrl(qs.size ? `?${qs}` : ""), { method: "GET" }, false);
+      return recArray((json as { articles?: unknown } | null)?.articles).map(toArticle);
+    },
+    /** One article by id (includes your own drafts). */
+    get: async (id: number): Promise<Article> => {
+      const { json } = await this.requestUrl(this.articlesUrl(`/${id}`), { method: "GET" }, false);
+      const a = rec((json as { article?: unknown } | null)?.article);
+      if (!a.id) throw new SinnonError("Article not found.", 404, "not_found");
+      return toArticle(a);
+    },
+    /** Create a draft. Publish it separately with publish(). */
+    create: async (params: CreateArticleParams): Promise<Article> => {
+      const { json } = await this.requestUrl(this.articlesUrl(""), { method: "POST", body: JSON.stringify(this.articleBody(params)) }, false);
+      const a = rec((json as { article?: unknown } | null)?.article);
+      if (!a.id) throw new SinnonError("Could not create the article.", 502, "create_failed");
+      return toArticle(a);
+    },
+    /** Edit a draft or published article (partial). */
+    update: async (id: number, patch: Partial<CreateArticleParams>): Promise<Article> => {
+      const { json } = await this.requestUrl(this.articlesUrl(`/${id}`), { method: "PATCH", body: JSON.stringify(this.articleBody(patch)) }, false);
+      const a = rec((json as { article?: unknown } | null)?.article);
+      return a.id ? toArticle(a) : this.articles.get(id);
+    },
+    /** Make it public (needs articles:publish). */
+    publish: async (id: number): Promise<Article> => {
+      const { json } = await this.requestUrl(this.articlesUrl(`/${id}/publish`), { method: "POST", body: "{}" }, false);
+      const a = rec((json as { article?: unknown } | null)?.article);
+      return a.id ? toArticle(a) : this.articles.get(id);
+    },
+    /** Take it back down (needs articles:publish). */
+    archive: async (id: number): Promise<Article> => {
+      const { json } = await this.requestUrl(this.articlesUrl(`/${id}/archive`), { method: "POST", body: "{}" }, false);
+      const a = rec((json as { article?: unknown } | null)?.article);
+      return a.id ? toArticle(a) : this.articles.get(id);
+    },
+    /** Set the vanity slug (blog.example.com/my-post). */
+    setCustomSlug: async (id: number, customSlug: string): Promise<Article> => {
+      const { json } = await this.requestUrl(this.articlesUrl(`/${id}/custom-slug`), { method: "PUT", body: JSON.stringify({ custom_slug: customSlug }) }, false);
+      const a = rec((json as { article?: unknown } | null)?.article);
+      return a.id ? toArticle(a) : this.articles.get(id);
+    },
+    delete: async (id: number): Promise<void> => {
+      await this.requestUrl(this.articlesUrl(`/${id}`), { method: "DELETE" }, false);
+    },
+    /** Post a comment on an article. */
+    comment: async (articleId: number, bodyMd: string, opts?: { parentId?: number }): Promise<ArticleComment> => {
+      const { json } = await this.requestUrl(this.articlesUrl(`/${articleId}/comments`), {
+        method: "POST", body: JSON.stringify({ body_md: bodyMd, ...(opts?.parentId != null ? { parent_id: opts.parentId } : {}) }),
+      }, false);
+      return toArticleComment(rec((json as { comment?: unknown } | null)?.comment));
+    },
+    react: async (articleId: number, kind: string): Promise<void> => {
+      await this.requestUrl(this.articlesUrl(`/${articleId}/reactions/${encodeURIComponent(kind)}`), { method: "POST", body: "{}" }, false);
+    },
+    unreact: async (articleId: number, kind: string): Promise<void> => {
+      await this.requestUrl(this.articlesUrl(`/${articleId}/reactions/${encodeURIComponent(kind)}`), { method: "DELETE" }, false);
+    },
+    /** Upload an image into the article's silo; returns a public URL ready to
+     *  paste into bodyMd as an ![](url) image. */
+    uploadMedia: async (id: number, data: Uint8Array | Blob, opts?: { filename?: string; contentType?: string }): Promise<{ mediaSlug: string; url: string; bytes: number; contentType: string }> => {
+      const form = new FormData();
+      const blob = data instanceof Blob ? data : new Blob([data], opts?.contentType ? { type: opts.contentType } : {});
+      form.append("file", blob, opts?.filename ?? "upload");
+      const { json } = await this.requestUrl(this.articlesUrl(`/${id}/media`), { method: "POST", body: form }, false);
+      const j = rec(json);
+      return { mediaSlug: String(j.media_slug ?? ""), url: String(j.url ?? ""), bytes: Number(j.size_bytes ?? 0), contentType: String(j.content_type ?? "") };
+    },
+    /** Custom domains for the blog (point blog.example.com at it). */
+    domains: {
+      list: async (): Promise<Record<string, unknown>> => rec((await this.requestUrl(this.articlesUrl("/domains"), { method: "GET" }, false)).json),
+      add: async (hostname: string): Promise<Record<string, unknown>> => rec((await this.requestUrl(this.articlesUrl("/domains"), { method: "POST", body: JSON.stringify({ hostname }) }, false)).json),
+      verify: async (domainId: number): Promise<Record<string, unknown>> => rec((await this.requestUrl(this.articlesUrl(`/domains/${domainId}/verify`), { method: "POST", body: "{}" }, false)).json),
+      remove: async (domainId: number): Promise<void> => { await this.requestUrl(this.articlesUrl(`/domains/${domainId}`), { method: "DELETE" }, false); },
+    },
+    /** The key-less public reader every visitor uses (no secret). */
+    public: (): PublicArticlesReader => createPublicArticles({ baseUrl: this.serverRoot(), fetch: this.fetchImpl, timeoutMs: this.timeoutMs }),
+  };
+  private articlesUrl(sub: string): string {
+    return `${this.serverRoot()}/api/org-articles${sub}`;
+  }
+  private articleBody(p: Partial<CreateArticleParams>): Record<string, unknown> {
+    const b: Record<string, unknown> = {};
+    if (p.title !== undefined) b.title = p.title;
+    if (p.subtitle !== undefined) b.subtitle = p.subtitle;
+    if (p.summary !== undefined) b.summary = p.summary;
+    if (p.coverImageUrl !== undefined) b.cover_image_url = p.coverImageUrl;
+    if (p.bodyMd !== undefined) b.body_md = p.bodyMd;
+    if (p.tags !== undefined) b.tags = p.tags;
+    if (p.donationsEnabled !== undefined) b.donations_enabled = p.donationsEnabled;
+    return b;
+  }
+
+  /** Your organization's storefront (the product catalog the POS card readers
+   *  ring up) + its online orders. The catalog is authed (products:read /
+   *  products:write); the key-less public shop every buyer uses is
+   *  store.public(code) / the standalone createPublicStore(). Payments settle
+   *  net of the platform fee into your operator earnings (withdraw via
+   *  payouts), the same rail as writer donations. */
+  readonly store = {
+    products: {
+      /** Active products (the shop). Pass includeArchived for the full
+       *  management view. */
+      list: async (opts?: { includeArchived?: boolean }): Promise<StoreProduct[]> => {
+        const { json } = await this.requestUrl(this.productsUrl(opts?.includeArchived ? "?all=1" : ""), { method: "GET" }, false);
+        return recArray((json as { products?: unknown } | null)?.products).map(toStoreProduct);
+      },
+      get: async (id: number): Promise<StoreProduct> => {
+        const { json } = await this.requestUrl(this.productsUrl(`/${id}`), { method: "GET" }, false);
+        const p = rec((json as { product?: unknown } | null)?.product);
+        if (!p.id) throw new SinnonError("Product not found.", 404, "not_found");
+        return toStoreProduct(p);
+      },
+      create: async (params: CreateStoreProductParams): Promise<StoreProduct> => {
+        const { json } = await this.requestUrl(this.productsUrl(""), { method: "POST", body: JSON.stringify(this.storeProductBody(params)) }, false);
+        return toStoreProduct(rec((json as { product?: unknown } | null)?.product));
+      },
+      update: async (id: number, patch: Partial<CreateStoreProductParams> & { archived?: boolean }): Promise<StoreProduct> => {
+        const body = this.storeProductBody(patch);
+        if (patch.archived !== undefined) body.status = patch.archived ? "archived" : "active";
+        const { json } = await this.requestUrl(this.productsUrl(`/${id}`), { method: "PUT", body: JSON.stringify(body) }, false);
+        return toStoreProduct(rec((json as { product?: unknown } | null)?.product));
+      },
+      delete: async (id: number): Promise<void> => {
+        await this.requestUrl(this.productsUrl(`/${id}`), { method: "DELETE" }, false);
+      },
+    },
+    /** Online storefront orders (newest first) — the sell-side view, with
+     *  buyer email + amounts. Needs products:read. */
+    orders: async (opts?: { limit?: number }): Promise<StoreOrder[]> => {
+      const { json } = await this.requestUrl(this.productsUrl(`/orders${opts?.limit ? `?limit=${opts.limit}` : ""}`), { method: "GET" }, false);
+      return recArray((json as { orders?: unknown } | null)?.orders).map(toStoreOrder);
+    },
+    /** The storefront's public code — hand it to createPublicStore() (or
+     *  store.public()) so a browser can list products and check out with no
+     *  key. */
+    publicCode: async (): Promise<string> => encodeOrgPublicCode(await this.orgId()),
+    public: (code: string): PublicStoreReader => createPublicStore({ code, baseUrl: this.serverRoot(), fetch: this.fetchImpl, timeoutMs: this.timeoutMs }),
+  };
+  private productsUrl(sub: string): string {
+    return `${this.serverRoot()}/api/org-products${sub}`;
+  }
+  private storeProductBody(p: Partial<CreateStoreProductParams>): Record<string, unknown> {
+    const b: Record<string, unknown> = {};
+    if (p.name !== undefined) b.name = p.name;
+    if (p.description !== undefined) b.description = p.description;
+    if ("sku" in p) b.sku = p.sku ?? null;
+    if (p.priceCents !== undefined) b.price_cents = p.priceCents;
+    if ("stock" in p) b.stock = p.stock == null ? null : p.stock;
+    if (p.imageUrl !== undefined) b.image_url = p.imageUrl;
+    return b;
+  }
+
+  /** Live support / AI chat widget for a generated site. The widget token is
+   *  minted once in the console (Chat is human-provisioned by design), then
+   *  chat.public(token) / the standalone createPublicChat() runs the browser
+   *  widget with no key. */
+  readonly chat = {
+    public: (token: string): PublicChatWidget =>
+      createPublicChat({ token, baseUrl: this.serverRoot(), fetch: this.fetchImpl, timeoutMs: this.timeoutMs }),
+  };
+
+  /** Read the org's (or an operator's) public brand kit — logo, name, bio,
+   *  links, layout — so a generated site can theme itself to the operator.
+   *  Read-only, over the already-public profile endpoints (no scope needed).
+   *  Note: the profile has no dedicated brand-color field, so `accent` is
+   *  usually empty. */
+  readonly brand = {
+    get: async (): Promise<BrandKit> => {
+      const { json } = await this.requestUrl(`${this.serverRoot()}/api/public/org/${await this.orgId()}`, { method: "GET" }, false);
+      const node = json as { organization?: unknown; org?: unknown; operator?: unknown } | null;
+      return toBrandKit(rec(node?.organization ?? node?.operator ?? node?.org ?? node), "org");
+    },
+    operator: async (identifier: string | number): Promise<BrandKit> => {
+      const { json } = await this.requestUrl(`${this.serverRoot()}/api/public/operator/${encodeURIComponent(String(identifier))}`, { method: "GET" }, false);
+      return toBrandKit(rec((json as { operator?: unknown } | null)?.operator), "operator");
+    },
+  };
 
   /** The org Communicator: post into your team's channels (rendered as
    *  system notices under the key's label, like automation reports) and
@@ -4421,7 +5206,7 @@ export class Agent {
 
   /** Poll until the agent reports ready AND its container responds. */
   async waitUntilReady(opts?: { timeoutMs?: number; pollMs?: number }): Promise<this> {
-    const deadline = Date.now() + (opts?.timeoutMs ?? 180_000);
+    const deadline = Date.now() + (opts?.timeoutMs ?? 300_000);
     const pollMs = opts?.pollMs ?? 4_000;
     while (Date.now() < deadline) {
       await this.refresh();
@@ -4485,6 +5270,7 @@ export class Agent {
       const dec = new TextDecoder();
       let buf = "";
       let sawExit = false;
+      let sawBusy = false;
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -4508,7 +5294,25 @@ export class Agent {
             try { rec = JSON.parse(payload) as Record<string, unknown>; } catch { continue; }
             const at = typeof rec.t === "number" ? rec.t : 0;
             if (rec.type === "out" && typeof rec.data === "string") {
-              yield { type: "output", text: decodeB64(rec.data), at };
+              // Turn-state protocol: the agent CLI emits a private OSC
+              // (ESC ] 6973 ; t=busy|idle BEL) on every state CHANGE. Strip
+              // the markers from the text (they're protocol, not content)
+              // and surface them as events. The very first marker a session
+              // prints is its boot-time prompt ("idle" before any work), so
+              // "idle" is only emitted after a "busy" has been seen — that
+              // makes `if (ev.type === "idle") break` mean "the dispatched
+              // turn finished", never "the shell just booted".
+              let text = decodeB64(rec.data);
+              const states: Array<"busy" | "idle"> = [];
+              text = text.replace(/\x1b\]6973;t=(busy|idle)(?:\x07|\x1b\\)/g, (_m, s: string) => {
+                states.push(s as "busy" | "idle");
+                return "";
+              });
+              if (text) yield { type: "output", text, at };
+              for (const s of states) {
+                if (s === "busy") { sawBusy = true; yield { type: "busy", at }; }
+                else if (sawBusy) yield { type: "idle", at };
+              }
             } else if (rec.type === "in" && typeof rec.data === "string") {
               yield { type: "input", text: decodeB64(rec.data), at };
             } else if (rec.type === "exit") {
@@ -4912,7 +5716,7 @@ export class Container {
 
   /** Poll until the container reports ready (running, not asleep). */
   async waitUntilReady(opts?: { timeoutMs?: number; pollMs?: number }): Promise<this> {
-    const deadline = Date.now() + (opts?.timeoutMs ?? 180_000);
+    const deadline = Date.now() + (opts?.timeoutMs ?? 300_000);
     const pollMs = opts?.pollMs ?? 4_000;
     while (Date.now() < deadline) {
       await this.refresh();

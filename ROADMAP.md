@@ -2,6 +2,32 @@
 
 ## Shipped
 
+- **`@sinnon/sdk` website + business surfaces (0.9.0)** — the building blocks a
+  prompt-to-site generator needs, each with a **key-less public half** for the
+  customer's browser. **`store`** — `store.products.*` CRUD over
+  `/api/org-products` (`products:read` / `products:write`, the same catalog the
+  POS card readers ring up) + `store.orders()`, plus a standalone browser
+  `createPublicStore({ code })` / `store.public(code)` that lists products and
+  opens a hosted Stripe Checkout with **no key**. Payments settle NET of the
+  platform fee into the seller's operator earnings ledger (withdrawn via
+  payouts) — the donations rail, so a seller takes money with **zero Stripe
+  onboarding**. Backend: `routes/store-public.ts` at `/api/public/store` +
+  `config.org_store_orders` + a `store_purchase` webhook fulfilment case.
+  **`articles`** — a full blog/CMS (`create` / `update` / `publish` / `archive`
+  / `setCustomSlug` / `uploadMedia` / `comment` / `react` / `domains.*`) over a
+  new org-key lane on `/api/org-articles` (`articles:read` / `articles:write` /
+  `articles:publish`, publish held separate so a write key can draft without
+  going public; moderation stays human-only) + a standalone
+  `createPublicArticles()` / `articles.public()` reader over
+  `/api/public/medium` (feed / by-slug / by-operator / by-org / media), no key.
+  **`chat`** — `createPublicChat({ token })` / `chat.public(token)`, the
+  browser support/AI widget (`config` / `send` / `poll` / `ask`), token minted
+  in the console (chat stays human-provisioned by design). **`brand`** —
+  `brand.get()` / `brand.operator(id)`, a read-only brand kit (logo, name, bio,
+  links, layout) over the public profile, no scope. Plus `customers.get()` /
+  `customers.update()` rounding out the customer book. Sites (a one-call
+  generate → deploy → wire wrapper) land next.
+
 - **`@sinnon/sdk` `booking` (0.8.0)** — Calendly-style scheduling on top of the
   org calendar. Authed org side (`booking.pages.*` create/list/get/update/
   rotateToken/delete, `booking.types.*`, and triage `booking.list()` /
@@ -15,7 +41,11 @@
   `geocode()` / `reverseGeocode()`), so a custom booking widget can run on any
   customer site with no secret. Verified end-to-end: SDK-provisioned page/types,
   a browser widget booked through the public booker, and the org side read the
-  booking back via `booking.list()`.
+  booking back via `booking.list()`. A later revision adds a per-type `scheduling` mode:
+  `appointment` (pick a time slot, default) or `request` (no time — an inquiry/
+  quote/callback that skips the calendar and lands as a pending request with no
+  calendar event; `book()`'s `startsAt` is then optional). Honoured by the
+  platform's own `/book` page and console type-editor too.
 
 - **`@sinnon/sdk` `containers` (0.7.0)** — bare compute from code: `list()` /
   `get()` / `plans()` / `create({ plan | shape, sleep, idempotencyKey })`

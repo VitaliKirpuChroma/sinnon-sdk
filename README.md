@@ -126,6 +126,12 @@ await sinnon.booking.types.create(page.id, {
   name: "Boat lift", durationMinutes: 60, locationKind: "in_person",
   questions: [{ id: "site", label: "Pickup address", type: "address", required: true }],
 });
+// A request-only type — no time slot. Skips the calendar (no event); it just
+// lands as a pending request. Good for quotes, callbacks, and rentals:
+await sinnon.booking.types.create(page.id, {
+  name: "Request a quote", scheduling: "request",
+  questions: [{ id: "job", label: "Tell us about the job", type: "textarea", required: true }],
+});
 
 // 2. Triage what comes in:
 for (const b of await sinnon.booking.list({ status: "pending" })) {
@@ -147,6 +153,39 @@ await booker.book({
 
 Scopes: `calendar:read` / `calendar:write`. The public booker is unauthenticated
 by design (address autocomplete, slots, book, reschedule, cancel).
+
+## A whole website and business from code
+
+Booking is one building block. The SDK now carries the rest of what a site
+generator needs to put a real business online — each with a **key-less public
+half** your customers' browsers use with no secret:
+
+```ts
+// Content pages (blog/CMS) — publish, then serve readers with no key:
+const post = await sinnon.articles.create({ title: "We're live", bodyMd: "# Hi" });
+await sinnon.articles.publish(post.id);                 // articles:publish
+import { createPublicArticles } from "@sinnon/sdk";
+const feed = await createPublicArticles().feed({ limit: 10 });
+
+// A storefront that TAKES MONEY — key-less checkout collects card payments
+// into your earnings (net of fee), the same rail as writer donations:
+await sinnon.store.products.create({ name: "Crew tee", priceCents: 2500, stock: 40 });
+const code = await sinnon.store.publicCode();
+import { createPublicStore } from "@sinnon/sdk";
+const shop = createPublicStore({ code });
+const { url } = await shop.checkout({ productId: (await shop.products())[0].id });
+
+// A support / AI chat widget (token minted once in the console):
+import { createPublicChat } from "@sinnon/sdk";
+const reply = await createPublicChat({ token: "..." }).ask("Do you deliver?");
+
+// The operator's brand kit, to theme the generated site:
+const kit = await sinnon.brand.get(); // logo, name, bio, links, layout
+```
+
+Scopes: `products:read` / `products:write` (store), `articles:read` /
+`articles:write` / `articles:publish` (blog). Chat and the public readers need
+no key at all — the token / public code is the capability.
 
 ## Getting a key
 
