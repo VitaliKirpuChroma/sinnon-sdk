@@ -20,6 +20,9 @@ export interface SinnonClientOptions {
   /** API base (the `/api/v1` root). Falls back to SINNON_BASE_URL, then
    *  the hosted platform. */
   baseURL?: string;
+  /** Alias for `baseURL` — accepted so either casing works (the public
+   *  `createPublic*` helpers use `baseUrl`). Prefer `baseURL`. */
+  baseUrl?: string;
   /** Hard client-side spend cap for THIS client's lifetime, in EUR. Once
    *  the cumulative cost of calls made through this client reaches the cap,
    *  further billable calls throw a `budget_exceeded` SinnonError before
@@ -1315,6 +1318,8 @@ export interface PublicBookingOptions {
   /** Server root, e.g. "https://www.sinnon.net" (no /api suffix). Defaults to
    *  the public host. Pass "" for same-origin from a browser. */
   baseUrl?: string;
+  /** Alias for `baseUrl` — accepted so either casing works. */
+  baseURL?: string;
   fetch?: typeof fetch;
   timeoutMs?: number;
 }
@@ -1443,7 +1448,7 @@ function bookingTypeBody(t: Partial<CreateBookingTypeParams>): Record<string, un
 export function createPublicBooking(options: PublicBookingOptions): PublicBooker {
   const token = options.token;
   if (!token) throw new SinnonError("A booking page token is required.", 400, "token_required");
-  const root = (options.baseUrl ?? PUBLIC_BOOKING_ROOT).replace(/\/+$/, "");
+  const root = (options.baseUrl ?? options.baseURL ?? PUBLIC_BOOKING_ROOT).replace(/\/+$/, "");
   const base = `${root}/api/public/booking/${encodeURIComponent(token)}`;
   const doFetch = options.fetch ?? fetch;
   const timeoutMs = typeof options.timeoutMs === "number" && options.timeoutMs > 0 ? options.timeoutMs : 30_000;
@@ -1804,6 +1809,8 @@ export interface PublicReaderOptions {
   /** Server root. Default the SINNON cloud; pass "" for same-origin when the
    *  site proxies /api to the platform. */
   baseUrl?: string;
+  /** Alias for `baseUrl` — accepted so either casing works. */
+  baseURL?: string;
   fetch?: typeof fetch;
   timeoutMs?: number;
 }
@@ -1820,7 +1827,7 @@ export interface PublicArticlesReader {
 }
 
 export function createPublicArticles(options: PublicReaderOptions = {}): PublicArticlesReader {
-  const root = (options.baseUrl ?? PUBLIC_ROOT).replace(/\/+$/, "");
+  const root = (options.baseUrl ?? options.baseURL ?? PUBLIC_ROOT).replace(/\/+$/, "");
   const base = `${root}/api/public/medium`;
   const doFetch = options.fetch ?? fetch;
   const timeoutMs = typeof options.timeoutMs === "number" && options.timeoutMs > 0 ? options.timeoutMs : 30_000;
@@ -1879,7 +1886,7 @@ export interface PublicStoreOptions extends PublicReaderOptions {
 export function createPublicStore(options: PublicStoreOptions): PublicStoreReader {
   const code = options.code;
   if (!code) throw new SinnonError("A storefront code is required.", 400, "code_required");
-  const root = (options.baseUrl ?? PUBLIC_ROOT).replace(/\/+$/, "");
+  const root = (options.baseUrl ?? options.baseURL ?? PUBLIC_ROOT).replace(/\/+$/, "");
   const base = `${root}/api/public/store/${encodeURIComponent(code)}`;
   const doFetch = options.fetch ?? fetch;
   const timeoutMs = typeof options.timeoutMs === "number" && options.timeoutMs > 0 ? options.timeoutMs : 30_000;
@@ -1957,7 +1964,7 @@ export interface PublicChatOptions extends PublicReaderOptions {
 export function createPublicChat(options: PublicChatOptions): PublicChatWidget {
   const token = options.token;
   if (!token) throw new SinnonError("A chat widget token is required.", 400, "token_required");
-  const root = (options.baseUrl ?? PUBLIC_ROOT).replace(/\/+$/, "");
+  const root = (options.baseUrl ?? options.baseURL ?? PUBLIC_ROOT).replace(/\/+$/, "");
   const base = `${root}/api/public/chat/${encodeURIComponent(token)}`;
   const doFetch = options.fetch ?? fetch;
   const timeoutMs = typeof options.timeoutMs === "number" && options.timeoutMs > 0 ? options.timeoutMs : 30_000;
@@ -2099,7 +2106,7 @@ export class SinnonClient {
     }
     this.apiKey = apiKey;
     this.baseURL =
-      (options.baseURL ?? (typeof process !== "undefined" ? process.env?.SINNON_BASE_URL : undefined) ?? DEFAULT_BASE_URL)
+      (options.baseURL ?? options.baseUrl ?? (typeof process !== "undefined" ? process.env?.SINNON_BASE_URL : undefined) ?? DEFAULT_BASE_URL)
         .replace(/\/+$/, "");
     this.fetchImpl = options.fetch ?? fetch;
     this.maxSpendEur =

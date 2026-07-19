@@ -1,6 +1,6 @@
 {
   "name": "@sinnon/sdk",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "The SINNON platform client — metered EU-hosted models and always-on agents you can dispatch, watch live, and budget from code.",
   "keywords": [
     "sinnon",
