@@ -7,3 +7,4 @@ package-lock.json
 
 # QA scratch harnesses
 examples/_tmp-*
+e2e/
