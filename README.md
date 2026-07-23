@@ -30,46 +30,53 @@ the cent, and always-on agents you can watch and take over.
 
 ## The 30-second version
 
+Hire an always-on agent, cap what it can spend, hand it a real job, and watch it
+work, live:
+
 ```ts
 import { SinnonClient } from "@sinnon/sdk";
 
-const sinnon = new SinnonClient(); // reads SINNON_API_KEY
+const sinnon = new SinnonClient();                 // reads SINNON_API_KEY
+
+const agent = await sinnon.agents.create({ name: "changelog-bot" });
+await agent.waitUntilReady();                      // real compute, spun up for you
+await agent.budget({ capEur: 2 });                 // a hard cap the platform enforces, not your code
+
+const { sessionId } = await agent.dispatch(
+  "Read the last 20 commits on main and write the release notes",
+);
+
+for await (const ev of agent.watch(sessionId)) {   // streamed live, as it works
+  if (ev.type === "output") process.stdout.write(ev.text);
+  if (ev.type === "exit") break;
+}
+```
+
+An employee, not an endpoint: no LLM-provider account, nothing to host, and a
+bill it cannot blow past.
+
+Just need a metered model? One call, and it hands you back the cost:
+
+```ts
 const r = await sinnon.models.complete({
   model: "claude-haiku-4-5",
-  messages: [{ role: "user", content: "Explain data residency in one sentence." }],
+  messages: [{ role: "user", content: "Write a haiku about where your data sleeps at night." }],
 });
 
 console.log(r.text);
 console.log(r.billing); // { costEur: 0.01, balanceEur: 49.97 }  ← the glass box, in code
 ```
 
-Tokens are billed at cost from your organization's prepaid balance, on
-EU-sovereign infrastructure. No separate LLM-provider account, no second bill.
+Everything runs on EU-sovereign infrastructure, billed at cost from your
+organization's prepaid balance. No separate LLM-provider account, no second bill.
 
-## Where SINNON is different: agents with hands
+## Agents with hands, not just a brain
 
 Most AI libraries give your app a brain for one request. SINNON gives it
-**employees** — always-on agents that run the work. That surface is the
-headline of `@sinnon/sdk`, and Phase 1 is live:
-
-```ts
-const agent = await sinnon.agents.create({ name: "inbox-watcher" });
-await agent.waitUntilReady();
-
-const { sessionId } = await agent.dispatch("Watch our support inbox and draft replies");
-
-// Watch it working, live — and cap what it can spend:
-for await (const ev of agent.watch(sessionId)) {
-  if (ev.type === "output") process.stdout.write(ev.text);
-  if (ev.type === "exit") break;
-}
-await agent.budget({ capEur: 5 }); // enforced by the platform, not your process
-
-await agent.delete();
-```
-
-Live-tailing a session (`agent.watch()`) and taking over from code land next —
-see [ROADMAP.md](./ROADMAP.md).
+**employees** — always-on agents that own the work. The loop above is the whole
+lifecycle, all from code: `create` → `waitUntilReady` → `dispatch` → `watch` →
+`budget` → `delete`. Taking over a running session yourself, reading and typing
+into it live, lands next — see [ROADMAP.md](./ROADMAP.md).
 
 ## Agents that host — ports, firewall, domains
 
