@@ -1,8 +1,28 @@
 # SINNON SDK
 
+[![npm](https://img.shields.io/npm/v/@sinnon/sdk?color=cb3837&logo=npm&label=%40sinnon%2Fsdk)](https://www.npmjs.com/package/@sinnon/sdk)
+[![TypeScript](https://img.shields.io/badge/TypeScript-ready-3178c6?logo=typescript&logoColor=white)](https://www.npmjs.com/package/@sinnon/sdk)
+[![zero dependencies](https://img.shields.io/badge/dependencies-0-2ea44f)](./packages/sdk/package.json)
+[![license](https://img.shields.io/npm/l/@sinnon/sdk?color=8957e5)](./LICENSE)
+
+**Dispatch always-on AI agents, watch them work live, and cap what they can
+spend — on EU-hosted infrastructure, in a few lines of TypeScript.**
+
 The JavaScript/TypeScript client for [SINNON](https://www.sinnon.net) —
 EU-hosted AI infrastructure with a glass box: metered inference you can meter to
 the cent, and always-on agents you can watch and take over.
+
+<!-- ┌─ HIGHEST-ROI TODO: a demo GIF here is the #1 lever for stars. ─────────────┐
+     │ Record the agents.watch() live stream (it's the differentiated bit):      │
+     │   1. npm i -g asciinema  (or record at https://asciinema.org)             │
+     │   2. asciinema rec docs/demo.cast  → run the agents quickstart → Ctrl-D   │
+     │   3. render: agg docs/demo.cast docs/demo.gif  (github.com/asciinema/agg) │
+     │   4. delete this comment and uncomment the line below:                    │
+     └───────────────────────────────────────────────────────────────────────────┘
+![A SINNON agent, watched live from code](./docs/demo.gif)
+-->
+
+⭐ If the glass box is your kind of thing, a star helps others find it.
 
 | Package | What it does | Status |
 |---|---|---|
